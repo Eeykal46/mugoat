@@ -125,6 +125,8 @@ jobs:
                   archive.extractall(out)
           PY
             root=$(dirname "$(dirname "$(dirname "$(find "$RUNNER_TEMP/inputs/x" -path '*/b/8b0b5899ed/game.wasm' -print -quit)")")")
+            # A zip made in Files may hold manifest.json beside b/ instead of in data/.
+            if [ ! -f "$root/data/manifest.json" ] && [ -f "$root/manifest.json" ]; then mkdir -p "$root/data" && cp "$root/manifest.json" "$root/data/manifest.json"; fi
             [ -f "$root/b/8b0b5899ed/game.wasm" ] && [ -f "$root/data/manifest.json" ] || { echo "The zip needs data/manifest.json and b/8b0b5899ed/game.wasm (with shaders/)." >&2; exit 1; }
             ditto "$root/data" "$RUNNER_TEMP/game-files/data"
             ditto "$root/b" "$RUNNER_TEMP/game-files/b"
