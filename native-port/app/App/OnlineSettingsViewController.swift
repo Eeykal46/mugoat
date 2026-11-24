@@ -25,6 +25,9 @@ enum OnlineSettings {
         set { UserDefaults.standard.set(newValue, forKey: "MugoatOnlineRoom") }
     }
     static let roles = ["Dân thường", "Cảnh sát", "Bác sĩ", "Băng đảng", "Tài xế"]
+    /// Malay City: the same roles in English; this label is the tag other players see before the name.
+    static let roleLabels = ["Civilian", "Police", "Medic", "Gang", "Driver"]
+    static func roleLabel(_ role: String) -> String { roles.firstIndex(of: role).map { roleLabels[$0] } ?? role }
     static var role: String {
         get { UserDefaults.standard.string(forKey: "MugoatOnlineRole") ?? "Dân thường" }
         set { UserDefaults.standard.set(newValue, forKey: "MugoatOnlineRole") }
@@ -36,7 +39,7 @@ enum OnlineSettings {
     static func configure(mode: GameMode) -> Bool {
         setenv("MUGUET_PVP", pvp ? "1" : "0", 1)
         let currentRole = role
-        let displayName = (currentRole != "Dân thường" && !name.hasPrefix("[")) ? "[\(currentRole)] \(name)" : name
+        let displayName = (currentRole != roles[0] && !name.hasPrefix("[")) ? "[\(roleLabel(currentRole))] \(name)" : name
         return (enabled ? server : "").withCString { server in
             displayName.withCString { name in room.withCString { room in
                 MugoatOnlineConfigure(server, name, room, Int32(mode.rawValue))
@@ -53,7 +56,7 @@ enum OnlineSettings {
 final class OnlineSettingsViewController: UIViewController {
     private let running: Bool
     private let enabled = UISwitch()
-    private let rolePicker = UISegmentedControl(items: OnlineSettings.roles)
+    private let rolePicker = UISegmentedControl(items: OnlineSettings.roleLabels)
     private let pvp = UISwitch()
     private let server = UITextField()
     private let name = UITextField()

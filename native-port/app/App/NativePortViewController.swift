@@ -1086,6 +1086,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         choices["gyroAim"] = GyroAimMode.allCases.map { $0.title }
         choices["tiltSteer"] = TiltSteerMode.allCases.map { $0.title }
         choices["language"] = ["English", "Tiếng Việt"]
+        choices["role"] = OnlineSettings.roleLabels
         var d: [String: Any] = [:]
         d["_choices"] = choices
         d["preset"] = Self.presetNames[preset]
@@ -1120,6 +1121,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         d["version"] = appVersionText
         d["device"] = s.tier.summary
         d["server"] = OnlineSettings.server
+        d["room"] = OnlineSettings.room
+        d["role"] = OnlineSettings.roleLabel(OnlineSettings.role)
+        d["pvp"] = OnlineSettings.pvp
         return d
     }
 
@@ -1165,6 +1169,19 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         case "language":
             L10n.language = value == "Tiếng Việt" ? "vi" : "en"
             refreshLanguage()
+        case "server":
+            // Same check as the original Online screen: a host or IP (with optional :port), no path or spaces.
+            let host = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !host.isEmpty && host.utf8.count <= 253 && !host.contains("/") && !host.contains(where: { $0.isWhitespace }) {
+                OnlineSettings.server = host
+            } else {
+                launcher.send("toast", ["kind": "err", "text": "Invalid server address"])
+            }
+        case "room":
+            let channel = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if channel.utf8.count <= 64 { OnlineSettings.room = channel.isEmpty ? "story" : channel }
+        case "role": if let i = OnlineSettings.roleLabels.firstIndex(of: value) { OnlineSettings.role = OnlineSettings.roles[i] }
+        case "pvp": OnlineSettings.pvp = on
         default: return
         }
         launcher.send("settings", launcherSettings())
@@ -1282,9 +1299,29 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             case "logs": self.shareLauncherLogs()
             case "licenses": self.showLauncherCredits()
             case "filesStart", "filesResume", "filesPause", "filesCancel", "filesRemove": self.launcherFilesAction(action)
+            case "ramCustom": self.askLauncherRAM()
             default: break
             }
         }
+    }
+
+    /// Game memory in MB, typed in (as the original settings' "Enter MB…").
+    private func askLauncherRAM() {
+        let physical = GameSettings.shared.tier.physicalMemoryMB
+        let alert = UIAlertController(title: "Game Memory", message: "MB the game may use (3072 – \(max(3072, physical))). Empty or 0 uses all RAM.", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.keyboardType = .numberPad
+            field.placeholder = "4096"
+            if GameSettings.shared.engineMemoryMB > 0 { field.text = String(GameSettings.shared.engineMemoryMB) }
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self, weak alert] _ in
+            guard let self else { return }
+            let mb = Int(alert?.textFields?.first?.text ?? "") ?? 0
+            GameSettings.shared.engineMemoryMB = mb <= 0 ? 0 : min(max(mb, 3072), max(3072, physical))
+            self.launcher.send("settings", self.launcherSettings())
+        })
+        present(alert, animated: true)
     }
 
     private func shareLauncherLogs() {

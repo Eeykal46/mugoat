@@ -179,6 +179,7 @@ IC.gr='<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4
 IC.gy='<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>';
 IC.gm='<path d="M12 2l3 7h7l-5.5 4.5 2 7L12 16l-6.5 4.5 2-7L2 9h7z"/>';
 IC.dv='<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>';
+IC.on='<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>';
 function act(name){ return function(){ call("action", name); }; }
 function ch(k){ var c=(S.settings&&S.settings._choices)||{}; return c[k]||[]; }
 function is(k, v){ return S.settings && String(S.settings[k])===v; }
@@ -190,7 +191,7 @@ function buildTabs(){
     {k:"preset",n:"Graphics Preset",d:"Tahap grafik. Disyorkan untuk iPhone ini: "+(f.recommended||"—")+". Preset lebih tinggi boleh kehabisan memori atau panas.",t:"pick",v:ch("preset")},
     {k:"resolution",n:"Resolution",d:(f.renderSize||"")+" · berkuat kuasa bila mula main.",t:"pick",v:ch("resolution")},
     {k:"fillScreen",n:"Fill Screen",d:"Render ikut bentuk skrin, bukan 16:9.",t:"sw"},
-    {k:"ram",n:"Game Memory",d:"Lalai guna semua RAM. Kalau tak dapat masuk game atau selalu crash, pilih lebih rendah. Minimum 3 GB.",t:"pick",v:ch("ram")},
+    {k:"ram",n:"Game Memory",d:"Lalai guna semua RAM. Kalau tak dapat masuk game atau selalu crash, pilih lebih rendah. Minimum 3 GB.",t:"pick",v:ch("ram"),custom:"Custom…",customAction:"ramCustom"},
     {k:"fps",n:"Frame Rate",d:"30 paling stabil. Unlocked sampai 120 pada skrin ProMotion.",t:"seg",v:["30","60","Unlocked"]},
     {k:"autoSmooth",n:"Auto Smooth",d:"Turunkan FPS bila frame lewat atau telefon panas, naik semula bila lega.",t:"sw"},
     {k:"framePacing",n:"Frame Pacing",d:"Setiap frame kekal sama lama di skrin bila FPS bawah kadar skrin.",t:"sw"}]},
@@ -222,8 +223,12 @@ function buildTabs(){
     {n:"Remove Downloaded Files",t:"btn",b:"REMOVE",f:act("filesRemove"),show:function(){ return fa.indexOf("remove")>=0; }},
     {n:"Cheat Menu (Trainer)",d:"Bertahan, senjata, panggil kenderaan, tukar cuaca… Story Mode dan Free Roam sahaja.",t:"btn",b:"OPEN",f:act("cheat")},
     {n:"Mod Manager",d:"Pasang .zip, .oiv atau .asi. Restart game selepas tukar mod.",t:"btn",b:"OPEN",f:act("mods")},
-    {n:"Saves & Backup",d:"Lihat fail save, buat backup atau restore.",t:"btn",b:"OPEN",f:act("saves")},
-    {n:"Online Server",d:"Alamat server untuk mod Online.",t:"btn",b:"OPEN",f:act("online")}]},
+    {n:"Saves & Backup",d:"Lihat fail save, buat backup atau restore.",t:"btn",b:"OPEN",f:act("saves")}]},
+  {id:"on",name:"Online",opts:[
+    {k:"server",n:"Server",d:"IP atau hostname server, contoh 192.168.1.10:47520 (UDP). Berkuat kuasa bila mula main.",t:"text",ph:"IP / hostname:47520"},
+    {k:"room",n:"Room",d:"Main sama bilik dan mode dengan kawan.",t:"text",ph:"room"},
+    {k:"role",n:"Role",d:"Peranan watak, ditunjuk depan nama anda.",t:"pick",v:ch("role")},
+    {k:"pvp",n:"PvP",d:"Boleh tembak pemain lain.",t:"sw"}]},
   {id:"dv",name:"Device",opts:[
     {n:"App Version",t:"info",k:"version"},
     {n:"Device",t:"info",k:"device"},
@@ -235,12 +240,14 @@ function buildTabs(){
 function fmtVal(o, v){ if(o.fmt) return o.fmt(v); var n=Number(v); return isFinite(n) ? (o.step<1 ? n.toFixed(o.step<0.1?2:1) : String(Math.round(n))) : "—"; }
 function pickList(o){
   var cur=String(S.settings[o.k]==null?"":S.settings[o.k]), pick=cur;
-  modal(o.n.toUpperCase(),"",[{t:"CANCEL"},{t:"SELECT",red:true,f:function(){ if(pick!==cur) setVal(o.k, pick, false); }}]);
+  modal(o.n.toUpperCase(),"",[{t:"CANCEL"},{t:"SELECT",red:true,f:function(){
+    if(o.custom && pick===o.custom){ call("action", o.customAction); return; }
+    if(pick!==cur) setVal(o.k, pick, false); }}]);
   var p=$("mP"); p.style.display="none";
   var list=document.createElement("div"); list.id="modeList"; p.parentNode.insertBefore(list, p.nextSibling);
   list.style.cssText="display:flex;flex-direction:column;gap:6px;margin-top:2px;max-height:56vh;overflow-y:auto";
   function draw(){ list.innerHTML="";
-    o.v.forEach(function(v){ var e=document.createElement("button"); e.className="btn cb fx "+(v===pick?"hot":"glass");
+    o.v.concat(o.custom?[o.custom]:[]).forEach(function(v){ var e=document.createElement("button"); e.className="btn cb fx "+(v===pick?"hot":"glass");
       e.style.cssText="height:38px;justify-content:flex-start;padding:0 14px;width:100%;font-size:13px;flex:none"; e.textContent=v;
       e.onclick=function(){ pick=v; draw(); }; list.appendChild(e); }); }
   draw();
@@ -273,6 +280,13 @@ renderTab=function(id){
       rg.oninput=function(){ lab.textContent=fmtVal(o,rg.value); };
       rg.onchange=function(){ setVal(o.k, rg.value, false); };
       w.appendChild(lab); w.appendChild(rg); r.appendChild(w);
+    } else if(o.t==="text"){
+      var tx=document.createElement("input"); tx.type="text"; tx.value=cur==null?"":String(cur); tx.placeholder=o.ph||"";
+      tx.autocapitalize="off"; tx.autocomplete="off"; tx.spellcheck=false;
+      tx.style.cssText="flex:none;width:210px;max-width:52%;height:32px;padding:0 10px;font-family:ui-monospace,Menlo,monospace;text-transform:none;letter-spacing:0;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:12px;border-radius:0;outline:none";
+      tx.onkeydown=function(e){ if(e.key==="Enter") tx.blur(); };
+      tx.onchange=function(){ setVal(o.k, tx.value.trim(), false); };
+      r.appendChild(tx);
     } else if(o.t==="btn"){
       var b=document.createElement("button"); b.className="btn cb glass fx"; b.textContent=o.b||"OK"; b.onclick=o.f; r.appendChild(b);
     } else if(o.t==="info"){
