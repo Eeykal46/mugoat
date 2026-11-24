@@ -1,0 +1,31 @@
+{
+  "hero": {
+    "label": "MALAY CITY · iOS",
+    "title": "YOUR CITY.",
+    "title2": "YOUR STORY.",
+    "text": "Kerja, bisnes, geng dan polis, semua dimainkan oleh pemain sebenar."
+  },
+  "social": [
+    { "name": "discord", "url": "" },
+    { "name": "tiktok", "url": "" },
+    { "name": "website", "url": "https://malaycity.com" }
+  ],
+  "update": [
+    { "title": "Malay City", "title2": "iOS", "date": "", "text": "Versi iOS Malay City kini boleh dicuba. Pilih mode, tekan PLAY dan selamat datang ke Los Santos.", "image": "", "url": "" }
+  ],
+  "event": [
+    { "title": "GTA V Online", "title2": "Coming Soon", "date": "", "text": "Server Online Malay City untuk iOS sedang disiapkan. Ikuti Discord untuk tarikh pelancaran.", "image": "", "url": "" }
+  ],
+  "rules": [
+    { "title": "Server Rules", "title2": "", "date": "", "text": "Baca peraturan server di Discord sebelum main Online.", "image": "", "url": "" }
+  ],
+  "tips": [
+    { "title": "SELECT A", "title2": "MODE", "text": "Pilih Story Mode, Free Roam atau Online sebelum tekan PLAY." },
+    { "title": "AUTO", "title2": "SMOOTH", "text": "Hidupkan Auto Smooth di Settings > Graphics supaya FPS kekal stabil bila telefon panas." }
+  ],
+  "background": { "video": "", "image": "" },
+  "ios": {
+    "server": "",
+    "status": ""
+  }
+}

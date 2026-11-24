@@ -158,14 +158,14 @@ jobs:
           PG_REUSE_PREPARED: ${{ steps.native-cache.outputs.cache-hit == 'true' && '1' || '0' }}
         run: |
           ./build_ipa.sh --mirror "$RUNNER_TEMP/game-files"
-          shasum -a 256 Mugoat-AppleID-Free.ipa Mugoat-Cert-Paid.ipa > SHA256SUMS.txt
+          shasum -a 256 MalayCity-AppleID-Free.ipa MalayCity-Cert-Paid.ipa > SHA256SUMS.txt
           codesign --verify --deep --strict app/Build/IPA-Free/Payload/PlayGTA5Native.app
           codesign --verify --deep --strict app/Build/IPA-Paid/Payload/PlayGTA5Native.app
           plutil -lint app/Build/IPA-Free/Payload/PlayGTA5Native.app/Info.plist
-          unzip -t Mugoat-AppleID-Free.ipa > /dev/null
-          unzip -t Mugoat-Cert-Paid.ipa > /dev/null
-          python3 app/Scripts/verify_native_ipa.py Mugoat-AppleID-Free.ipa --revision "$GITHUB_SHA" > Native-IPA-Free-validation.json
-          python3 app/Scripts/verify_native_ipa.py Mugoat-Cert-Paid.ipa --revision "$GITHUB_SHA" > Native-IPA-Paid-validation.json
+          unzip -t MalayCity-AppleID-Free.ipa > /dev/null
+          unzip -t MalayCity-Cert-Paid.ipa > /dev/null
+          python3 app/Scripts/verify_native_ipa.py MalayCity-AppleID-Free.ipa --revision "$GITHUB_SHA" > Native-IPA-Free-validation.json
+          python3 app/Scripts/verify_native_ipa.py MalayCity-Cert-Paid.ipa --revision "$GITHUB_SHA" > Native-IPA-Paid-validation.json
       - name: Test native runtime and BC texture fallback
         working-directory: native-port/app
         run: |
@@ -174,10 +174,10 @@ jobs:
           "$RUNNER_TEMP/mugoat-bc-tests"
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: Mugoat-Native-IPA
+          name: MalayCity-IPA
           path: |
-            native-port/Mugoat-AppleID-Free.ipa
-            native-port/Mugoat-Cert-Paid.ipa
+            native-port/MalayCity-AppleID-Free.ipa
+            native-port/MalayCity-Cert-Paid.ipa
             native-port/SHA256SUMS.txt
             native-port/Native-IPA-*-validation.json
           retention-days: 7

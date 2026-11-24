@@ -63,6 +63,10 @@ targets:
       - path: Tools/wabt-1.0.42/share/wabt/wasm2c/wasm-rt-exceptions-impl.c
       - path: Resources
         buildPhase: resources
+      # Malay City launcher (HTML from the Android app + ios.js), kept as a folder in the bundle.
+      - path: Launcher
+        type: folder
+        buildPhase: resources
       - path: GeneratedResources
         buildPhase: resources
         optional: true
@@ -71,6 +75,7 @@ targets:
       - sdk: Metal.framework
       - sdk: IOSurface.framework
       - sdk: UIKit.framework
+      - sdk: WebKit.framework
       - sdk: MetalKit.framework
       - sdk: GameController.framework
       - sdk: AVFAudio.framework
@@ -83,7 +88,7 @@ targets:
         embed: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: vn.iosvn.mugoat
+        PRODUCT_BUNDLE_IDENTIFIER: com.malaycity.ios
         PRODUCT_NAME: PlayGTA5Native
         TARGETED_DEVICE_FAMILY: "1,2"
         # Paid Apple developer accounts can use App/Full.entitlements (more
@@ -92,19 +97,25 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: Mugoat
+        CFBundleDisplayName: Malay City
         CFBundleShortVersionString: "2.0"
         # Your game-file server may be a plain-http address on your tailnet.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         # Filled in by the cloud build so you don't have to type it.
         PGDefaultAssetServer: ""
-        NSMicrophoneUsageDescription: "Mugoat sử dụng micro để trò chuyện trong game qua voice chat (Loa & Mic)."
+        NSMicrophoneUsageDescription: "Malay City guna mikrofon untuk voice chat dengan pemain lain dalam game."
         # The app folder (logs) is visible in the Files app.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleVersion: "20"
-        UILaunchScreen: {}
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+          UIImageName: LaunchLogo
+          UIImageRespectsSafeAreaInsets: true
+        # Launcher content (news, links, hero); the Android file is used until the iOS one exists.
+        MCLauncherJSON: "https://malaycity.com/ios/launcher.json"
+        MCLauncherJSONFallback: "https://malaycity.com/mobile/launcher.json"
         UIRequiresFullScreen: true
         # Lets the game present above 60 FPS on ProMotion iPhones when the frame rate is unlocked.
         CADisableMinimumFrameDurationOnPhone: true

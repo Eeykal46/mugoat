@@ -27,9 +27,11 @@ def verify(path, revision=None):
             offset += size
         if (minimum or 0) < 0x0f0000 or (minimum or 0) > 0x100000 or platform != 2: raise ValueError(f'Wrong binary deployment: {version(minimum or 0)}, platform {platform}')
         if info.get('MinimumOSVersion') not in ('15.0', '16.0'): raise ValueError(f"Wrong bundle minimum OS: {info.get('MinimumOSVersion')}")
-        if info['CFBundleIdentifier']!='vn.iosvn.mugoat': raise ValueError('Save-preserving bundle ID changed')
+        if info['CFBundleIdentifier']!='com.malaycity.ios': raise ValueError('Save-preserving bundle ID changed')
         if info['CFBundleShortVersionString']!='2.0' or info['CFBundleVersion']!='20': raise ValueError('Old build/version')
         if prefix+'manifest.json' not in package.namelist(): raise ValueError('Missing manifest.json in app bundle')
+        for launcher_file in ['Launcher/index.html','Launcher/ios.js','Launcher/launcher.json','Launcher/media/logo.png']:
+            if prefix+launcher_file not in package.namelist(): raise ValueError('Missing Malay City launcher file '+launcher_file)
         if any(name.startswith(prefix) and name.endswith(('.wasm','.cwasm')) for name in package.namelist()): raise ValueError('Unexpected VM game payload')
         for forbidden in [b'wasmtime_runtime',b'wgpu_core',b'wasmtime::']:
             if forbidden in executable: raise ValueError('Old VM/graphics runtime remains in executable')

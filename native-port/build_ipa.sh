@@ -59,8 +59,8 @@ rm -rf "$STAGE_FREE"
 mkdir -p "$STAGE_FREE/Payload"
 ditto "$APP" "$STAGE_FREE/Payload/PlayGTA5Native.app"
 codesign --force --sign - --entitlements App/Free.entitlements --generate-entitlement-der "$STAGE_FREE/Payload/PlayGTA5Native.app"
-(cd "$STAGE_FREE" && zip -qry "$ROOT_DIR/Mugoat-AppleID-Free.ipa" Payload)
-echo "Done (Free Apple ID): $ROOT_DIR/Mugoat-AppleID-Free.ipa"
+(cd "$STAGE_FREE" && zip -qry "$ROOT_DIR/MalayCity-AppleID-Free.ipa" Payload)
+echo "Done (Free Apple ID): $ROOT_DIR/MalayCity-AppleID-Free.ipa"
 
 # 2. Build IPA for Paid Certificate / Developer Account (extra memory entitlements)
 STAGE_PAID=Build/IPA-Paid
@@ -68,7 +68,7 @@ rm -rf "$STAGE_PAID"
 mkdir -p "$STAGE_PAID/Payload"
 ditto "$APP" "$STAGE_PAID/Payload/PlayGTA5Native.app"
 codesign --force --sign - --entitlements App/Full.entitlements --generate-entitlement-der "$STAGE_PAID/Payload/PlayGTA5Native.app"
-(cd "$STAGE_PAID" && zip -qry "$ROOT_DIR/Mugoat-Cert-Paid.ipa" Payload)
-cp "$ROOT_DIR/Mugoat-Cert-Paid.ipa" "$ROOT_DIR/Mugoat.ipa"
-echo "Done (Paid Certificate): $ROOT_DIR/Mugoat-Cert-Paid.ipa"
+(cd "$STAGE_PAID" && zip -qry "$ROOT_DIR/MalayCity-Cert-Paid.ipa" Payload)
+cp "$ROOT_DIR/MalayCity-Cert-Paid.ipa" "$ROOT_DIR/MalayCity.ipa"
+echo "Done (Paid Certificate): $ROOT_DIR/MalayCity-Cert-Paid.ipa"
 

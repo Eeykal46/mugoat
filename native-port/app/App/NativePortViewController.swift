@@ -74,6 +74,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private var engineStarted = false
     /// The engine stopped with an error: it can only start again in a new app process.
     private var engineFailed = false
+    /// Malay City launcher (the Android launcher's HTML UI) shown above the native start screen.
+    private let launcher = LauncherView()
+    private var launcherContent: [String: Any] = [:]
     private var bootedPreset = GameSettings.shared.graphicsPreset
     /// Render height multiplier while the phone is hot (1 = the chosen resolution).
     private var thermalScale = 1.0
@@ -254,6 +257,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             home.topAnchor.constraint(equalTo: view.topAnchor),
             home.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+        setUpLauncher()
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         logFile = directory.appendingPathComponent("native-port.log")
         // Keep the previous run's log: after a crash it is the one worth sharing (Settings, Share log).
@@ -369,6 +373,11 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             movementProofStarted = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 30) { self.verifyMovement() }
         }
+        if line.hasPrefix("{\"pct\""), !launcher.isHidden, let data = line.data(using: .utf8),
+           let progress = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let pct = progress["pct"] as? Int {
+            let label = (progress["label"] as? String).map { " · " + $0 } ?? ""
+            launcher.send("toast", ["kind": pct >= 100 ? "ok" : "spin", "text": "Loading \(pct)%" + label])
+        }
         if line == "WORLD_READY" {
             PGSetTargetingMode(Int32(GameSettings.shared.targetingMode))
             if worldReadyAt == nil { worldReadyAt = CACurrentMediaTime() }
@@ -381,10 +390,13 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         }
         if line == "WORLD_READY" || line.contains("\"label\":\"First frame\"") || line.contains("\"world\":true") {
             diagnosticsOverlay?.isHidden = true
+            if !launcher.isHidden { launcher.send("sleep") }
             UIView.animate(withDuration: 0.35) {
                 self.home.alpha = 0
+                self.launcher.alpha = 0
             } completion: { _ in
                 self.home.isHidden = true
+                self.launcher.isHidden = true
             }
             touchControlsAvailable = true
             fpsLabel.isHidden = false
@@ -400,6 +412,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             home.alpha = 1.0
             home.settingsButton.isHidden = false
             home.layoutButton.isHidden = false
+            launcher.isHidden = false
+            launcher.alpha = 1
+            launcher.send("wake")
+            launcher.send("playError", ["message": "Tak dapat masuk game. Tutup app sepenuhnya (swipe up) dan buka semula."])
             showWhenFree(title: L10n.text("Không thể vào game"), message: line + "\n\n" + L10n.text("Hãy tắt hẳn ứng dụng (vuốt lên khỏi đa nhiệm) rồi mở lại. Nếu lỗi lặp lại, gửi file native-port-previous.log trong thư mục Mugoat."))
         }
         if !written { LogWriter.shared.write(line) }
@@ -1007,6 +1023,171 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     /// Missing files or a mode choice are handled by tapping Play; only a running engine locks it.
     private func updatePlayEnabled() {
         launchButton.isEnabled = !engineStarted && !engineFailed
+        launcher.send("files", ["ok": launcherHasFiles])
+    }
+
+    // MARK: Malay City launcher
+
+    private static let launcherModeKey = "MCLauncherMode"
+    private static let presetNames = ["Battery", "Smooth", "Balanced", "Sharp", "High", "Max"]
+    private static let gyroNames = ["Off", "Aiming", "Always"]
+    /// story, freeroam or online; nil until the player picks one (then remembered).
+    private var launcherMode: String? {
+        get { UserDefaults.standard.string(forKey: Self.launcherModeKey).flatMap { ["story", "freeroam", "online"].contains($0) ? $0 : nil } }
+        set { UserDefaults.standard.set(newValue, forKey: Self.launcherModeKey) }
+    }
+    private var launcherHasFiles: Bool {
+        GameFolder.isChosen || Self.isServerAddress(GameSettings.shared.assetServer) || GameInstallManager.shared.isRunning
+    }
+    private var appVersionText: String {
+        let info = Bundle.main.infoDictionary
+        return "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
+    }
+
+    private func launcherSettings() -> [String: Any] {
+        let s = GameSettings.shared
+        return [
+            "preset": Self.presetNames[min(max(s.graphicsPreset.rawValue, 0), Self.presetNames.count - 1)],
+            "fps": s.frameRateCap == 0 ? "Unlocked" : "\(s.frameRateCap)",
+            "autoSmooth": s.autoSmooth, "framePacing": s.framePacing, "fillScreen": s.matchScreenShape,
+            "fireAims": s.fireAlsoAims, "invertLook": s.invertLookY,
+            "gyroAim": Self.gyroNames[min(max(s.gyroAim.rawValue, 0), Self.gyroNames.count - 1)],
+            "hideTouch": s.hideTouchWithController,
+            "mode": launcherMode ?? "",
+            "version": appVersionText, "device": s.tier.summary, "server": OnlineSettings.server
+        ]
+    }
+
+    /// Story and Free Roam play offline; Online is Free Roam on the Malay City server.
+    private func applyLauncherMode(_ mode: String) {
+        launcherMode = mode
+        GameSettings.shared.gameMode = mode == "story" ? .story : .sandbox
+        OnlineSettings.enabled = mode == "online"
+        refreshModeChoice()
+    }
+
+    private func applyLauncherSetting(_ key: String, _ value: String) {
+        let s = GameSettings.shared
+        let on = value == "true"
+        switch key {
+        case "mode": if ["story", "freeroam", "online"].contains(value) { applyLauncherMode(value) }
+        case "preset": if let i = Self.presetNames.firstIndex(of: value), let preset = GraphicsPreset(rawValue: i) { s.graphicsPreset = preset }
+        case "fps": s.frameRateCap = value == "Unlocked" ? 0 : value == "60" ? 60 : 30
+        case "autoSmooth": s.autoSmooth = on
+        case "framePacing": s.framePacing = on
+        case "fillScreen": s.matchScreenShape = on; applyLiveResolution()
+        case "fireAims": s.fireAlsoAims = on
+        case "invertLook": s.invertLookY = on
+        case "gyroAim": if let i = Self.gyroNames.firstIndex(of: value), let mode = GyroAimMode(rawValue: i) { s.gyroAim = mode }
+        case "hideTouch": s.hideTouchWithController = on; touchControls.updateVisibility()
+        default: return
+        }
+        launcher.send("settings", launcherSettings())
+    }
+
+    private func setUpLauncher() {
+        launcher.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(launcher)
+        NSLayoutConstraint.activate([
+            launcher.leadingAnchor.constraint(equalTo: view.leadingAnchor), launcher.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            launcher.topAnchor.constraint(equalTo: view.topAnchor), launcher.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        home.isHidden = true
+        NotificationCenter.default.addObserver(self, selector: #selector(launcherForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+        // Keep a saved mode consistent with the native settings it stands for.
+        if let mode = launcherMode { applyLauncherMode(mode) }
+        launcher.onReady = { [weak self] in
+            guard let self else { return }
+            let nick = OnlineSettings.name == "Player" ? "" : OnlineSettings.name
+            self.launcher.send("state", ["version": self.appVersionText, "abi": "iOS arm64", "nick": nick,
+                                         "settings": self.launcherSettings(), "mode": self.launcherMode ?? "", "files": self.launcherHasFiles])
+            self.launcher.send("check", ["status": "ok", "files": self.launcherHasFiles])
+            LauncherContent.load { [weak self] content in
+                guard let self else { return }
+                self.launcherContent = content
+                if let ios = content["ios"] as? [String: Any], let server = ios["server"] as? String,
+                   !server.trimmingCharacters(in: .whitespaces).isEmpty, !self.engineStarted {
+                    OnlineSettings.server = server.trimmingCharacters(in: .whitespaces)
+                    self.launcher.send("settings", self.launcherSettings())
+                }
+                self.launcher.send("content", content)
+            }
+        }
+        launcher.onCheck = { [weak self] in
+            guard let self else { return }
+            self.launcher.send("check", ["status": "ok", "files": self.launcherHasFiles])
+        }
+        launcher.onQuery = { [weak self] in
+            guard let self else { return }
+            LauncherContent.status(from: self.launcherContent) { [weak self] status in self?.launcher.send("query", status) }
+        }
+        launcher.onNick = { name in
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { OnlineSettings.name = trimmed }
+        }
+        launcher.onSetting = { [weak self] key, value in self?.applyLauncherSetting(key, value) }
+        launcher.onPlay = { [weak self] mode, nick in
+            guard let self else { return }
+            if self.engineFailed {
+                self.launcher.send("playError", ["message": "Tutup app sepenuhnya (swipe up) dan buka semula sebelum main lagi."]); return
+            }
+            guard ["story", "freeroam", "online"].contains(mode) else {
+                self.launcher.send("playError", ["message": "Select a mode first"]); return
+            }
+            self.applyLauncherMode(mode)
+            if mode == "online" {
+                let trimmed = nick.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty { OnlineSettings.name = trimmed }
+            }
+            self.startEngine()
+            self.launcher.send(self.engineStarted ? "launched" : "idle")
+            if self.engineStarted { self.launcher.send("toast", ["kind": "spin", "text": "Loading…"]) }
+        }
+        launcher.onAction = { [weak self] action in
+            guard let self, self.presentedViewController == nil else { return }
+            switch action {
+            case "files": self.showGameFiles()
+            case "layout": self.showLayoutEditor()
+            case "cheat": self.showCheatMenu()
+            case "mods": self.showModManager()
+            case "saves": self.showSaves()
+            case "online": self.showOnline()
+            case "advanced": self.showSettings()
+            case "logs": self.shareLauncherLogs()
+            case "licenses": self.showLauncherCredits()
+            default: break
+            }
+        }
+    }
+
+    private func shareLauncherLogs() {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let files = ["native-port.log", "native-port-previous.log"].map { documents.appendingPathComponent($0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        let perf = documents.appendingPathComponent("PerfLogs", isDirectory: true)
+        let perfFiles = ((try? FileManager.default.contentsOfDirectory(at: perf, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "csv" }.sorted { $0.lastPathComponent > $1.lastPathComponent }.prefix(3)
+        let items = files + perfFiles
+        guard !items.isEmpty else { launcher.send("toast", ["kind": "warn", "text": "Tiada log lagi"]); return }
+        let share = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        share.popoverPresentationController?.sourceView = view
+        share.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+        present(share, animated: true)
+    }
+
+    private func showLauncherCredits() {
+        let text = """
+        Malay City for iOS is built on open-source work:
+        • Mugoat (iOSVN) and Muguet by Constantin Clerc (c22dev): GPL-3.0
+        • GTA V Port host by Kevin Erik: MIT
+
+        GPL-3.0: the source of this app, with its changes, is available from the Malay City team. The full license texts are inside the app (Licenses).
+
+        Grand Theft Auto V and its game files belong to Rockstar Games / Take-Two. This app contains no game files; you add your own copy.
+        """
+        let alert = UIAlertController(title: "Credits & Licenses", message: text, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
     static func isServerAddress(_ text: String) -> Bool {
         guard let url = URL(string: text), let scheme = url.scheme?.lowercased(), let host = url.host else { return false }
@@ -1104,6 +1285,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
 
     @objc private func leftApp() {
         GameSettings.shared.markBootInterrupted()
+        if !launcher.isHidden { launcher.send("pause") }
+    }
+    @objc private func launcherForeground() {
+        if !launcher.isHidden { launcher.send("resume") }
     }
 
     /// The touch-controls layout editor (pre-game, or from Settings).
