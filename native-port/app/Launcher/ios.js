@@ -205,9 +205,11 @@ function buildTabs(){
     {k:"resolution",n:"Resolution",d:(f.renderSize||"")+" · berkuat kuasa bila mula main.",t:"pick",v:ch("resolution")},
     {k:"fillScreen",n:"Fill Screen",d:"Render ikut bentuk skrin, bukan 16:9.",t:"sw"},
     {k:"ram",n:"Game Memory",d:"Auto: ikut had memori yang iOS beri dan ruang alamat yang tinggal (disyorkan). Nilai tetap hanya untuk ujian. Minimum 3 GB.",t:"pick",v:ch("ram"),custom:"Custom…",customAction:"ramCustom"},
-    {k:"fps",n:"Frame Rate",d:"30 paling stabil. Unlocked sampai 120 pada skrin ProMotion.",t:"seg",v:["30","60","Unlocked"]},
+    {k:"fps",n:"Frame Rate",d:"Auto: sasar 60 (120 pada skrin ProMotion), turun sendiri bila frame lambat atau telefon panas, dan belajar resolusi yang telefon ini mampu. 30/60/Unlocked: tetap.",t:"seg",v:["Auto","30","60","Unlocked"]},
+    {k:"overlay",n:"Performance Overlay",d:"Paparan FPS, RAM dan suhu dalam game. Tekan paparan dalam game untuk tukar.",t:"pick",v:ch("overlay")},
     {k:"autoSmooth",n:"Auto Smooth",d:"Turunkan FPS bila frame lewat atau telefon panas, naik semula bila lega.",t:"sw"},
     {k:"framePacing",n:"Frame Pacing",d:"Setiap frame kekal sama lama di skrin bila FPS bawah kadar skrin.",t:"sw"},
+    {k:"engineCores",n:"Engine Threads",d:"Ujian: bilangan thread kerja enjin (Auto = 2). Lebih banyak boleh naikkan FPS tapi lebih panas. Berkuat kuasa bila mula main.",t:"pick",v:ch("engineCores")},
     {k:"textureCompression",n:"Texture Compression",d:"iPhone 13 (A15) ke atas: tekstur guna separuh memori supaya peta dan jalan keluar lebih cepat. Matikan kalau nampak tekstur pelik. Berkuat kuasa bila mula main.",t:"sw"}]},
   {id:"c",name:"Controls",opts:[
     {n:"Edit Controls Layout",d:f.layoutCustom?"Susun atur sendiri. Gerak, besar/kecilkan atau sorok butang.":"Gerak, besar/kecilkan atau sorok butang skrin.",t:"btn",b:"EDIT",f:act("layout")},

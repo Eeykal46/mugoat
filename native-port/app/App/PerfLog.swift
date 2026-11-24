@@ -55,9 +55,12 @@ final class PerfLog {
     func tick(now: CFTimeInterval, preset: String, smoothScale: Double, frameLimit: Int32) {
         // First line after 20 s (a crash soon after loading still leaves numbers), then once a minute.
         guard let url = fileURL, now - lastWrite >= (lastWrite == startedAt ? 20 : 60) else { return }
+        let windowSeconds = now - lastWrite
         lastWrite = now
         var window = PGPerfWindow()
         guard PGTakePerfWindow(&window) else { return }
+        AutoTune.shared.record(frames: Int(window.frames), seconds: windowSeconds, gpuMsPerFrame: window.gpuMsPerFrame,
+                               thermal: ProcessInfo.processInfo.thermalState.rawValue)
         var width: Int32 = 0, height: Int32 = 0
         PGGetRenderSize(&width, &height)
         let tier = GameSettings.shared.tier

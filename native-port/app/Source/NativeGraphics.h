@@ -41,6 +41,9 @@ bool PGReadRenderCounters(PGRenderCounters *out);
 void PGSetAppInBackground(bool background);
 // Frames the renderer has presented since launch (stops while the app is in the background).
 uint64_t PGPresentedFrames(void);
+// Performance overlay: up to `max` of the latest world frame intervals (ms, oldest first) and the
+// smoothed GPU time per frame. Returns how many were written.
+int PGHUDFrameTimes(float *out, int max, double *gpuMs);
 #ifdef __cplusplus
 }
 #endif

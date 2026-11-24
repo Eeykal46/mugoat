@@ -223,6 +223,13 @@ enum GraphicsConfiguration {
         list.sort()
         return list
     }
+    /// The render height for this session: the chosen one, or in frame-rate Auto with resolution Auto the
+    /// height this phone was learned to sustain (never above the preset's), or the preset's (0).
+    static func effectiveRenderHeight(_ settings: GameSettings) -> Int {
+        guard settings.renderHeight == 0, settings.frameRateAuto else { return settings.renderHeight }
+        let learned = AutoTune.shared.learnedHeight
+        return learned > 0 ? min(learned, settings.graphicsPreset.height) : 0
+    }
     /// Width/height to render at: the chosen height (or the preset's), shaped like the screen so the
     /// picture is not stretched.
     static func size(for preset: GraphicsPreset, renderHeight: Int, screen: CGSize, matchScreenShape: Bool) -> (Int, Int) {
@@ -238,22 +245,22 @@ enum GraphicsConfiguration {
     static func apply(_ settings: GameSettings, screen: CGSize) -> String {
         PGSetEngineMemoryMB(Int32(settings.engineMemoryMB))
         let preset = settings.graphicsPreset
-        let (width, height) = size(for: preset, renderHeight: settings.renderHeight, screen: screen, matchScreenShape: settings.matchScreenShape)
+        let (width, height) = size(for: preset, renderHeight: effectiveRenderHeight(settings), screen: screen, matchScreenShape: settings.matchScreenShape)
         let options = preset.engineOptions
         var pointers = options.map { strdup($0) }
         defer { pointers.forEach { free($0) } }
         pointers.withUnsafeMutableBufferPointer { buffer in
             buffer.baseAddress!.withMemoryRebound(to: UnsafePointer<CChar>?.self, capacity: buffer.count) {
-                PGConfigureEngine($0, UInt32(buffer.count), Int32(width), Int32(height), GameSettings.frameLimitCode(settings.frameRateCap))
+                PGConfigureEngine($0, UInt32(buffer.count), Int32(width), Int32(height), GameSettings.frameLimitCode(settings.effectiveFrameRateCap))
             }
         }
         // Even frame pacing when the cap is below the screen's refresh rate (30 on 60 Hz, 30/60 on 120 Hz).
-        let cap = settings.frameRateCap
+        let cap = settings.effectiveFrameRateCap
         PGSetPresentPacing(settings.framePacing && cap > 0 && cap < UIScreen.main.maximumFramesPerSecond ? 1.0 / Double(cap) : 0)
         // Resolution floor 1000‰: auto-smooth changes only the frame cap. A live back-buffer resize during
         // play crashed in the engine's ResizeBuffers (SIGSEGV, iPhone 13 Pro, 1558×720 → 1246×576), so the
         // governor must not resize until that path is fixed.
         PGSmoothConfigure(GameSettings.frameLimitCode(cap), Double(UIScreen.main.maximumFramesPerSecond), 1000)
-        return "\(preset.title) \(width)×\(height) at \(GameSettings.frameRateTitle(settings.frameRateCap))"
+        return "\(preset.title) \(width)×\(height) at " + (settings.frameRateAuto ? "Auto (up to \(UIScreen.main.maximumFramesPerSecond) FPS)" : GameSettings.frameRateTitle(settings.frameRateCap))
     }
 }

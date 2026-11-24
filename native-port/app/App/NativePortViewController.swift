@@ -52,6 +52,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private var queue: MTLCommandQueue?
     private let output = UITextView()
     private let fpsLabel = UILabel()
+    private let hud = PerformanceHUD()
+    private var lastHUDUpdate: CFTimeInterval = 0
     private var lastFPSLabelUpdate: CFTimeInterval = 0
     /// The start screen; it hides once the game's world is up.
     private lazy var home = HomeView(modes: GameMode.allCases.map { ($0.title, $0 == .story ? "book.fill" : "map.fill") }, log: output)
@@ -207,6 +209,14 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         fpsLabel.accessibilityLabel = "Game frame rate"
         fpsLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(fpsLabel)
+        hud.isHidden = true
+        hud.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(hud)
+        // A tap on the overlay cycles Original → Compact → Card → Detailed (Off is chosen in Settings).
+        fpsLabel.isUserInteractionEnabled = true
+        fpsLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(cycleOverlay)))
+        hud.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(cycleOverlay)))
+        AutoTune.shared.log = { [weak self] line in self?.appendLog(line) }
         touchControls.translatesAutoresizingMaskIntoConstraints = false
         touchControls.isHidden = true
         touchControls.inputChanged = { [weak self] in self?.pollController() }
@@ -245,7 +255,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             fpsLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
             fpsLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             fpsLabel.widthAnchor.constraint(equalToConstant: 68),
-            fpsLabel.heightAnchor.constraint(equalToConstant: 24)
+            fpsLabel.heightAnchor.constraint(equalToConstant: 24),
+            hud.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            hud.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8)
         ])
         NSLayoutConstraint.activate([
             metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -281,7 +293,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(installChanged), name: .gameInstallChanged, object: nil)
         displayLink = CADisplayLink(target: self, selector: #selector(pollController))
         // ProMotion screens only run above 60 Hz when the app asks: L10n.text("Unlocked") asks for up to 120.
-        if GameSettings.shared.frameRateCap == 0 {
+        if GameSettings.shared.effectiveFrameRateCap == 0 {
             let top = Float(UIScreen.main.maximumFramesPerSecond)
             displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, top), maximum: top, preferred: top)
         }
@@ -305,7 +317,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         if ProcessInfo.processInfo.arguments.contains("--touch-controls-preview") {
             diagnosticsOverlay?.isHidden = true
             touchControlsAvailable = true
-            fpsLabel.isHidden = false
+            applyOverlayMode(inWorld: true)
             touchControls.isHidden = false
         }
         NotificationCenter.default.addObserver(self, selector: #selector(preloadChanged), name: .assetPreloadChanged, object: nil)
@@ -413,7 +425,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
                 self.launcher.endLoading()
             }
             touchControlsAvailable = true
-            fpsLabel.isHidden = false
+            applyOverlayMode(inWorld: true)
         }
         if line.hasPrefix("Native boot stopped:") || line == "iOS could not reserve the engine memory." || line.hasPrefix("Native trap") {
             audioEngine.stop()
@@ -507,6 +519,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             return
         }
         if GameSettings.shared.textureCompression { unsetenv("PG_NO_LOSSY") } else { setenv("PG_NO_LOSSY", "1", 1) }
+        let cores = GameSettings.shared.engineCores
+        if cores > 0 { setenv("PG_ENGINE_CORES", "\(cores)", 1) } else { unsetenv("PG_ENGINE_CORES") }
         metalView.isPaused = true
         metalView.delegate = nil
         // Dawn owns the drawable size from here; MTKView must not reset it on layout.
@@ -1090,7 +1104,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private func launcherSettings() -> [String: Any] {
         let s = GameSettings.shared
         let screen = view.window?.windowScene?.screen.bounds.size ?? UIScreen.main.bounds.size
-        let size = GraphicsConfiguration.size(for: s.graphicsPreset, renderHeight: s.renderHeight, screen: screen, matchScreenShape: s.matchScreenShape)
+        let size = GraphicsConfiguration.size(for: s.graphicsPreset, renderHeight: GraphicsConfiguration.effectiveRenderHeight(s), screen: screen, matchScreenShape: s.matchScreenShape)
         let files = launcherFilesState()
         let preset = min(max(s.graphicsPreset.rawValue, 0), Self.presetNames.count - 1)
         let recommended = min(max(s.tier.recommended.rawValue, 0), Self.presetNames.count - 1)
@@ -1104,6 +1118,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         choices["tiltSteer"] = TiltSteerMode.allCases.map { $0.title }
         choices["language"] = ["English", "Tiếng Việt"]
         choices["role"] = OnlineSettings.roleLabels
+        choices["overlay"] = PerformanceOverlayMode.allCases.map(\.title)
+        choices["engineCores"] = ["Auto", "2", "3", "4"]
         var d: [String: Any] = [:]
         d["_choices"] = choices
         d["preset"] = Self.presetNames[preset]
@@ -1112,7 +1128,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         d["renderSize"] = "Renders at \(size.0)×\(size.1)"
         d["fillScreen"] = s.matchScreenShape
         d["ram"] = ramLabel(s.engineMemoryMB)
-        d["fps"] = s.frameRateCap == 0 ? "Unlocked" : "\(s.frameRateCap)"
+        d["fps"] = s.frameRateAuto ? "Auto" : s.frameRateCap == 0 ? "Unlocked" : "\(s.frameRateCap)"
+        d["overlay"] = s.performanceOverlay.title
+        d["engineCores"] = s.engineCores == 0 ? "Auto" : "\(s.engineCores)"
         d["autoSmooth"] = s.autoSmooth
         d["framePacing"] = s.framePacing
         d["textureCompression"] = s.textureCompression
@@ -1181,7 +1199,12 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             if let height = heights.first(where: { resolutionLabel($0) == value }) { s.renderHeight = height; applyLiveResolution() }
         case "fillScreen": s.matchScreenShape = on; applyLiveResolution()
         case "ram": if let mb = launcherRAMChoices.first(where: { ramLabel($0) == value }) { s.engineMemoryMB = mb }
-        case "fps": s.frameRateCap = value == "Unlocked" ? 0 : value == "60" ? 60 : 30
+        case "fps":
+            if value == "Auto" { s.frameRateAuto = true }
+            else { s.frameRateAuto = false; s.frameRateCap = value == "Unlocked" ? 0 : value == "60" ? 60 : 30 }
+        case "overlay":
+            if let mode = PerformanceOverlayMode.allCases.first(where: { $0.title == value }) { s.performanceOverlay = mode; applyOverlayMode() }
+        case "engineCores": s.engineCores = Int(value) ?? 0
         case "autoSmooth": s.autoSmooth = on
         case "framePacing": s.framePacing = on
         case "textureCompression": s.textureCompression = on
@@ -1731,7 +1754,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     /// One auto-smooth window (about a second of world frames). The governor also applies the thermal ceilings.
     private func smoothTick() {
         let settings = GameSettings.shared
-        guard settings.autoSmooth else { return }
+        guard settings.effectiveAutoSmooth else { return }
         var decision = PGSmoothDecision()
         let changed = PGSmoothTick(Int32(ProcessInfo.processInfo.thermalState.rawValue), &decision)
         guard changed else { return }
@@ -1755,7 +1778,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     /// iOS reports serious/critical heat keeps it smoother and lets it cool; the resolution returns after.
     @objc private func thermalStateChanged() {
         // With auto-smooth on, the governor reads the thermal state every window and caps on its own.
-        guard !GameSettings.shared.autoSmooth else { return }
+        guard !GameSettings.shared.effectiveAutoSmooth else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let state = ProcessInfo.processInfo.thermalState
@@ -1774,7 +1797,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         return
         let settings = GameSettings.shared
         let chosenHeight = settings.renderHeight > 0 ? settings.renderHeight : bootedPreset.height
-        let share = settings.autoSmooth ? smoothScale : thermalScale
+        let share = settings.effectiveAutoSmooth ? smoothScale : thermalScale
         let renderHeight = share < 1 ? Int(Double(chosenHeight) * share) : settings.renderHeight
         let (width, height) = GraphicsConfiguration.size(for: bootedPreset, renderHeight: renderHeight, screen: view.bounds.size, matchScreenShape: settings.matchScreenShape)
         PGSetBackBufferSize(Int32(width), Int32(height))
@@ -1812,6 +1835,27 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             appendLog("Test: mouse moved \(dx), \(dy)")
         }
     }
+    private var overlayInWorld = false
+    /// Shows the chosen overlay once the world is up: the original FPS label or the performance HUD.
+    private func applyOverlayMode(inWorld: Bool? = nil) {
+        if let inWorld { overlayInWorld = inWorld }
+        let mode = GameSettings.shared.performanceOverlay
+        hud.mode = mode
+        fpsLabel.isHidden = !overlayInWorld || mode != .original
+        hud.isHidden = !overlayInWorld || mode == .off || mode == .original
+        lastHUDUpdate = 0
+    }
+    @objc private func cycleOverlay() {
+        GameSettings.shared.performanceOverlay = GameSettings.shared.performanceOverlay.next
+        applyOverlayMode()
+    }
+    /// The frame rate the governor aims at now (for the overlay's graph).
+    private var currentTargetFPS: Double {
+        let code = smoothLimit >= 0 ? smoothLimit : GameSettings.frameLimitCode(GameSettings.shared.effectiveFrameRateCap)
+        let screen = Double(UIScreen.main.maximumFramesPerSecond)
+        return code == 2 ? 30 : code == 1 ? min(60, screen) : screen
+    }
+
     @objc private func pollController() {
         guard UIApplication.shared.applicationState == .active else {
             touchControls.reset(publish: false)
@@ -1828,7 +1872,11 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         }
         if engineStarted, worldReadyAt != nil {
             PerfLog.shared.tick(now: now, preset: bootedPreset.title, smoothScale: smoothScale,
-                                frameLimit: smoothLimit >= 0 ? smoothLimit : GameSettings.frameLimitCode(GameSettings.shared.frameRateCap))
+                                frameLimit: smoothLimit >= 0 ? smoothLimit : GameSettings.frameLimitCode(GameSettings.shared.effectiveFrameRateCap))
+        }
+        if !hud.isHidden, now - lastHUDUpdate >= 0.5 {
+            lastHUDUpdate = now
+            hud.show(PerformanceReading.read(targetFPS: currentTargetFPS))
         }
         if now - lastFPSLabelUpdate >= 0.25 {
             let fps = PGRenderedFramesPerSecond()

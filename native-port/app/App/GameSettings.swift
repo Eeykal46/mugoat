@@ -160,6 +160,29 @@ final class GameSettings {
         set { defaults.set(newValue, forKey: "frameRateCap") }
     }
     static func frameRateTitle(_ cap: Int) -> String { cap == 0 ? L10n.text("Unlocked") : "\(cap) FPS" }
+    /// Frame rate "Auto" (the default unless a cap was chosen): aims for the screen's rate (60, or 120 on
+    /// ProMotion), the governor steps down to 60 or 30 when frames run late or the phone heats up and back
+    /// up when there is room, and the render height this phone sustains is learned across sessions (AutoTune).
+    var frameRateAuto: Bool {
+        get {
+            if let value = defaults.object(forKey: "frameRateAuto") as? Bool { return value }
+            return defaults.object(forKey: "frameRateCap") == nil && defaults.object(forKey: "sixtyFPS") == nil
+        }
+        set { defaults.set(newValue, forKey: "frameRateAuto") }
+    }
+    /// The cap the engine gets: 0 (screen rate) in Auto.
+    var effectiveFrameRateCap: Int { frameRateAuto ? 0 : frameRateCap }
+    var effectiveAutoSmooth: Bool { frameRateAuto || autoSmooth }
+    /// Performance overlay mode (PerformanceHUD).
+    var performanceOverlay: PerformanceOverlayMode {
+        get { PerformanceOverlayMode(rawValue: defaults.string(forKey: "performanceOverlay") ?? "") ?? .card }
+        set { defaults.set(newValue.rawValue, forKey: "performanceOverlay") }
+    }
+    /// Engine worker threads for the game's job system (PG_ENGINE_CORES): 0 keeps the engine's default (2).
+    var engineCores: Int {
+        get { defaults.integer(forKey: "engineCores") }
+        set { defaults.set([0, 2, 3, 4].contains(newValue) ? newValue : 0, forKey: "engineCores") }
+    }
     /// Auto-smooth: lowers resolution, then the frame cap, when frames go late or the phone heats up,
     /// and raises them back when there is headroom. Never above the chosen resolution or frame rate.
     var autoSmooth: Bool {

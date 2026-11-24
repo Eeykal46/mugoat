@@ -289,6 +289,11 @@ static std::atomic<bool> smoothWorld{false};
 // Performance log: the same world frames over about a minute (Documents > PerfLogs, written by the app).
 static PGFrameMetricsWindow perfWindow;
 static double perfGPUMs = 0;
+// Performance overlay: the last world frame intervals and a smoothed GPU time (under smoothLock).
+static const int kHUDFrames = 300;
+static float hudFrames[kHUDFrames];
+static int hudCount = 0, hudNext = 0;
+static double hudGPUMs = 0;
 // While the app is in the background iOS refuses GPU work: the command buffer fails, and blit uploads
 // to private textures in it are lost (the textures stay empty after returning). Commits wait instead.
 static std::atomic<bool> holdGPU{false};
@@ -334,7 +339,7 @@ static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
 			double gpu = (done.GPUEndTime - done.GPUStartTime) * 1000;
 			std::lock_guard<std::mutex> g(smoothLock);
 			smoothWindow.addGPU(gpu);
-			if (std::isfinite(gpu) && gpu > 0 && gpu < 1000) perfGPUMs += gpu;
+			if (std::isfinite(gpu) && gpu > 0 && gpu < 1000) { perfGPUMs += gpu; hudGPUMs = hudGPUMs > 0 ? hudGPUMs * 0.9 + gpu * 0.1 : gpu; }
 		}
 		if (done.status == MTLCommandBufferStatusError) logOnce("cmderr" + std::to_string(done.error.code), "Metal renderer: command buffer failed: %s", done.error.localizedDescription.UTF8String);
 		for (auto &f : *callbacks) f();
@@ -1991,6 +1996,7 @@ static void present(uint32_t texId) {
 			std::lock_guard<std::mutex> g(smoothLock);
 			smoothWindow.record(gap);
 			perfWindow.record(gap, R->draws - R->drawsAtPresent, PGFrameWork{});
+			hudFrames[hudNext] = (float)gap; hudNext = (hudNext + 1) % kHUDFrames; hudCount = std::min(hudCount + 1, kHUDFrames);
 		}
 	}
 	R->statPresentAt = now;
@@ -2478,6 +2484,14 @@ extern "C" bool PGMetalRendererTakePerfWindow(uint64_t *frames, uint64_t *over33
 }
 
 extern "C" void PGSetAppInBackground(bool background) { mr::holdGPU.store(background, std::memory_order_release); }
+
+extern "C" int PGHUDFrameTimes(float *out, int max, double *gpuMs) {
+	std::lock_guard<std::mutex> g(mr::smoothLock);
+	int n = std::min(std::max(0, max), mr::hudCount);
+	for (int i = 0; i < n; i++) out[i] = mr::hudFrames[(mr::hudNext - n + i + mr::kHUDFrames) % mr::kHUDFrames];
+	if (gpuMs) *gpuMs = mr::hudGPUMs;
+	return n;
+}
 
 extern "C" uint64_t PGPresentedFrames(void) { return mr::published.presents.load(std::memory_order_relaxed); }
 

@@ -124,6 +124,8 @@ targets:
         # A game: iOS turns on Game Mode while it plays (more CPU/GPU priority, lower controller latency).
         LSApplicationCategoryType: public.app-category.action-games
         GCSupportsGameMode: true
+        # iOS 26 and later read this key for Game Mode (the GC key above is the older one).
+        LSSupportsGameMode: true
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
 schemes:
