@@ -15,6 +15,7 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <math.h>
 #include <sys/mman.h>
@@ -140,6 +141,18 @@ uint64_t pg_streaming_available_memory(uint64_t engineAvailable){
 // (input then stalls), so for a while after a refusal streaming stops growing, and right after
 // one it evicts. Process headroom never sees this: the phone still has memory free.
 extern _Atomic uint64_t pgHeapRefusedAt;
+// The Metal renderer could not create a texture: GPU memory is at the limit. Streaming evicts at once
+// and stops growing for a while (as after a refused heap), before the driver itself aborts.
+void PGNoteGPUAllocationFailure(void){
+ struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);double at=now.tv_sec+now.tv_nsec/1e9;uint64_t bits;memcpy(&bits,&at,8);
+ atomic_store(&pgHeapRefusedAt,bits);
+ static _Atomic double lastLog;double previous=atomic_load(&lastLog);
+ if(at-previous>5){atomic_store(&lastLog,at);
+  task_vm_info_data_t info={};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
+  uint64_t footprint=task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&count)==KERN_SUCCESS?info.phys_footprint:0;
+  char line[160];snprintf(line,sizeof line,"GPU allocation failed: streaming evicts and holds 30 s (app %llu MB, iOS headroom %llu MB).",
+   (unsigned long long)(footprint>>20),(unsigned long long)(os_proc_available_memory()>>20));pg_log(line);}
+}
 static int64_t heapCeilingBudget(int64_t result){
  uint64_t bits=atomic_load(&pgHeapRefusedAt);if(!bits)return result;
  double refusedAt;memcpy(&refusedAt,&bits,8);
@@ -192,8 +205,10 @@ u64 pg_video_memory(u64 reported){
  if(configured)mb=(uint64_t)atol(configured);
  else if(processLimitMB){
   uint64_t textures=processLimitMB>1800+640?processLimitMB-1800:640;
-  mb=PGGPUReadsBC()?textures:textures/2;
-  if(mb<640)mb=640;
+  // iPhone 13 Pro, 3 GB limit, BC decoded: the GPU held 543 MB of BC textures the engine counted as
+  // 130 MB (4.2x), then texture creation failed and the Metal driver aborted. A quarter, floor 384 MB.
+  mb=PGGPUReadsBC()?textures:textures/4;
+  if(mb<(PGGPUReadsBC()?640u:384u))mb=PGGPUReadsBC()?640:384;
  }
  if(!mb||(mb<<20)>=reported)return reported;
  char line[160];snprintf(line,sizeof line,"Video memory for the engine: %llu MB (memory limit %llu MB, %s).",(unsigned long long)mb,(unsigned long long)processLimitMB,PGGPUReadsBC()?"GPU reads BC textures":"BC textures decoded");pg_log(line);
@@ -1964,6 +1979,21 @@ void PGSetBackBufferSize(int width,int height){
   atomic_store((_Atomic int32_t *)(base+432),width&~1);
   atomic_store((_Atomic int32_t *)(base+436),height&~1);
 }
+// Crash lines also go to a file the app opens at launch (Documents/crash-last.log), so crashes before
+// the engine starts (launcher, settings screens) are recorded too. write() is async-signal-safe.
+static int crashLogFd=-1;
+static void crash_line(const char *text){
+  if(crashLogFd>=0){ size_t n=strlen(text); (void)!write(crashLogFd,text,n); (void)!write(crashLogFd,"\n",1); }
+  if(atomic_load(&started)) pg_log(text);
+}
+static void pg_crash_signal_handler(int sig, siginfo_t *info, void *ucontext);
+void PGInstallCrashLog(const char *path){
+  if(path&&crashLogFd<0) crashLogFd=open(path,O_WRONLY|O_CREAT|O_TRUNC,0644);
+  struct sigaction sa; memset(&sa,0,sizeof sa);
+  sa.sa_sigaction=pg_crash_signal_handler; sa.sa_flags=SA_SIGINFO|SA_RESETHAND;
+  sigaction(SIGSEGV,&sa,NULL); sigaction(SIGBUS,&sa,NULL); sigaction(SIGABRT,&sa,NULL); sigaction(SIGILL,&sa,NULL); sigaction(SIGFPE,&sa,NULL);
+}
+void PGCrashLogLine(const char *text){ if(text) crash_line(text); }
 static void pg_crash_signal_handler(int sig, siginfo_t *info, void *ucontext) {
   char buf[256];
   const char *sigName = "UNKNOWN";
@@ -1975,7 +2005,7 @@ static void pg_crash_signal_handler(int sig, siginfo_t *info, void *ucontext) {
     case SIGFPE:  sigName = "SIGFPE (Floating Point Exception)"; break;
   }
   snprintf(buf, sizeof buf, "NATIVE CRASH: Signal %d (%s) at address %p", sig, sigName, info ? info->si_addr : NULL);
-  pg_log(buf);
+  crash_line(buf);
 #if defined(__APPLE__) && defined(__arm64__)
   // Where it happened, as image+offset so the build's symbols can name the function afterwards.
   {
@@ -1991,7 +2021,7 @@ static void pg_crash_signal_handler(int sig, siginfo_t *info, void *ucontext) {
     snprintf(buf, sizeof buf, "CRASH thread '%s' pc 0x%llx lr 0x%llx fp 0x%llx sp 0x%llx; fault %s engine memory (base 0x%llx, size 0x%llx)",
              thread, (unsigned long long)pc, (unsigned long long)lr, (unsigned long long)fp, (unsigned long long)sp,
              fault >= base && fault < base + size ? "inside" : "outside", (unsigned long long)base, (unsigned long long)size);
-    pg_log(buf);
+    crash_line(buf);
     const uint64_t at[2] = {pc, lr};
     const char *names[2] = {"pc", "lr"};
     for (int i = 0; i < 2; i++) {
@@ -2000,7 +2030,7 @@ static void pg_crash_signal_handler(int sig, siginfo_t *info, void *ucontext) {
         const char *image = strrchr(d.dli_fname, '/'); image = image ? image + 1 : d.dli_fname;
         snprintf(buf, sizeof buf, "CRASH %s = %s+0x%llx (%s)", names[i], image,
                  (unsigned long long)(at[i] - (uint64_t)(uintptr_t)d.dli_fbase), d.dli_sname ? d.dli_sname : "?");
-        pg_log(buf);
+        crash_line(buf);
       }
     }
     // Frame-pointer walk (bounded): return addresses of the callers.
@@ -2011,7 +2041,7 @@ static void pg_crash_signal_handler(int sig, siginfo_t *info, void *ucontext) {
       if (ret && dladdr((const void *)(uintptr_t)ret, &d) && d.dli_fname) {
         const char *image = strrchr(d.dli_fname, '/'); image = image ? image + 1 : d.dli_fname;
         snprintf(buf, sizeof buf, "CRASH #%d %s+0x%llx (%s)", depth, image, (unsigned long long)(ret - (uint64_t)(uintptr_t)d.dli_fbase), d.dli_sname ? d.dli_sname : "?");
-        pg_log(buf);
+        crash_line(buf);
       }
       if (next <= frame) break;
       frame = next;

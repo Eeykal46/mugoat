@@ -14,6 +14,7 @@
 #include "BCTextureDecoder.h"
 #include "NativeFrameRate.h"
 #include "NativeSmoothGovernor.h"
+extern "C" void PGNoteGPUAllocationFailure(void);
 #include "NativeFrameMetrics.h"
 #import <UIKit/UIKit.h>
 #include <TargetConditionals.h>
@@ -485,7 +486,7 @@ static void createTexture(const uint32_t *p) {
 #if MR_TRACE
 	if (m.a8 && (bind & (BIND_RT | BIND_UAV))) logOnce("a8rt" + std::to_string(w) + "x" + std::to_string(h), "Metal renderer [trace]: A8 render target %u %ux%u bind %#x", id, w, h, bind);
 #endif
-	if (!t->tex) { gTextureStats.createFailures++; logOnce("tex" + std::to_string(dxgi) + "x" + std::to_string(bind), "Metal renderer: texture %ux%u dxgi %u bind %#x could not be created", w, h, dxgi, bind); }
+	if (!t->tex) { gTextureStats.createFailures++; PGNoteGPUAllocationFailure(); logOnce("tex" + std::to_string(dxgi) + "x" + std::to_string(bind), "Metal renderer: texture %ux%u dxgi %u bind %#x could not be created", w, h, dxgi, bind); }
 	else {
 		t->gpuBytes = t->tex.allocatedSize;
 		if (t->bcKind) {

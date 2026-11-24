@@ -110,7 +110,7 @@ targets:
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleVersion: "20"
         UILaunchScreen:
-          UIColorName: LaunchBackground
+          UIColorName: MCLaunchColor
         # Launcher content (news, links, hero); the Android file is used until the iOS one exists.
         MCLauncherJSON: "https://malaycity.com/ios/launcher.json"
         MCLauncherJSONFallback: "https://malaycity.com/mobile/launcher.json"

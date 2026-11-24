@@ -46,7 +46,8 @@ final class PerfLog {
 
     /// Call often (the controller poll); writes when a minute has passed.
     func tick(now: CFTimeInterval, preset: String, smoothScale: Double, frameLimit: Int32) {
-        guard let url = fileURL, now - lastWrite >= 60 else { return }
+        // First line after 20 s (a crash soon after loading still leaves numbers), then once a minute.
+        guard let url = fileURL, now - lastWrite >= (lastWrite == startedAt ? 20 : 60) else { return }
         lastWrite = now
         var window = PGPerfWindow()
         guard PGTakePerfWindow(&window) else { return }

@@ -39,6 +39,11 @@ void PGSetAssetServer(const char *url);
 // files (the app holds security-scoped access to it); NULL streams from the server.
 void PGSetLocalGameFolder(const char *dataPath);
 bool PGUsingLocalGameFolder(void);
+// Crash lines (signal, pc/lr, callers) also go to this file; install at launch, before the engine.
+void PGInstallCrashLog(const char *path);
+void PGCrashLogLine(const char *text);
+// The Metal renderer could not allocate a texture: streaming evicts and holds back for 30 s.
+void PGNoteGPUAllocationFailure(void);
 void PGStartEngine(const char *manifestPath, const char *filesRoot, PGLogCallback, void *context);
 void PGUpdateController(PGControllerState state, double elapsedSeconds);
 // Player context: 0 on foot, otherwise the vehicle type + 1 (see NativeTouchContext.h).

@@ -172,13 +172,20 @@ var _applyContent=applyContent;
 applyContent=function(c){
   _applyContent(c);
   if(S.bgc && S.bgc.video) H.bg({state:"ready", url:S.bgc.video, src:S.bgc.video});
+  // launcher.json "music": an mp3 link used when the app has no media/music.mp3
+  var mu=String((c&&c.music)||"").trim(), el=$("music");
+  if(el && /^https?:\/\//i.test(mu) && el.getAttribute("data-url")!==mu){ el.setAttribute("data-url",mu); el.src=mu; try{ el.load(); }catch(e){} music(); }
 };
 
 /* ---------- Settings: the original iOS app's settings, in the launcher's look ---------- */
+(function(){ var st=document.createElement("style");
+  st.textContent="#tabs{gap:3px;overflow-y:auto;min-height:0}#tabs::-webkit-scrollbar{width:0}#tabs .tab{height:31px;flex:none}#tabs .btn{flex:none}";
+  document.head.appendChild(st); })();
 IC.gr='<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>';
 IC.gy='<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>';
 IC.gm='<path d="M12 2l3 7h7l-5.5 4.5 2 7L12 16l-6.5 4.5 2-7L2 9h7z"/>';
 IC.dv='<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>';
+IC.l='<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>';
 IC.on='<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>';
 function act(name){ return function(){ call("action", name); }; }
 function ch(k){ var c=(S.settings&&S.settings._choices)||{}; return c[k]||[]; }
@@ -229,6 +236,10 @@ function buildTabs(){
     {k:"room",n:"Room",d:"Main sama bilik dan mode dengan kawan.",t:"text",ph:"room"},
     {k:"role",n:"Role",d:"Peranan watak, ditunjuk depan nama anda.",t:"pick",v:ch("role")},
     {k:"pvp",n:"PvP",d:"Boleh tembak pemain lain.",t:"sw"}]},
+  {id:"l",name:"Launcher",opts:[
+    {k:"music",n:"Launcher Music",d:"Main muzik latar dalam launcher.",t:"sw",local:true},
+    {k:"fx",n:"Visual Effects",d:"Pilih Low kalau telefon kau perlahan atau cepat panas.",t:"seg",v:["High","Low"],local:true},
+    {k:"fxmode",n:"Effect Style",d:"Gaya kesan latar launcher.",t:"seg",v:["Glitch","Terminal","Static","Grid"],local:true}]},
   {id:"dv",name:"Device",opts:[
     {n:"App Version",t:"info",k:"version"},
     {n:"Device",t:"info",k:"device"},
@@ -261,13 +272,13 @@ renderTab=function(id){
     var r=document.createElement("div"); r.className="opt";
     var l=document.createElement("div"); l.innerHTML='<div class="n">'+esc(o.n)+'</div>'+(o.d?'<div class="d">'+esc(o.d)+'</div>':"");
     r.appendChild(l);
-    var cur=o.k?S.settings[o.k]:null;
+    var cur=o.local?curVal(o):(o.k?S.settings[o.k]:null);
     if(o.t==="sw"){
       var v=cur===true||cur==="true", sw=document.createElement("button"); sw.className="sw cb fx"+(v?" on":""); sw.innerHTML="<i></i>";
-      sw.onclick=function(){ setVal(o.k, !v, false); }; r.appendChild(sw);
+      sw.onclick=function(){ setVal(o.k, !v, !!o.local); }; r.appendChild(sw);
     } else if(o.t==="seg"){
       var g=document.createElement("div"); g.className="seg";
-      o.v.forEach(function(x){ var b=document.createElement("button"); b.className="btn cb fx"+(String(cur)===String(x)?" hot":" glass"); b.textContent=x; b.onclick=function(){ setVal(o.k,x,false); }; g.appendChild(b); });
+      o.v.forEach(function(x){ var b=document.createElement("button"); b.className="btn cb fx"+(String(cur)===String(x)?" hot":" glass"); b.textContent=x; b.onclick=function(){ setVal(o.k,x,!!o.local); }; g.appendChild(b); });
       r.appendChild(g);
     } else if(o.t==="pick"){
       var pb=document.createElement("button"); pb.className="btn cb glass fx"; pb.style.cssText="flex:none;max-width:58%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
@@ -294,7 +305,19 @@ renderTab=function(id){
     }
     body.appendChild(r);
   });
+  repaintSettings(id);
 };
+/* iOS WebKit sometimes paints a freshly filled, clipped scroll box without its text until the next
+   layout (the rows' controls show, their names do not). Force a layer and lay out again shortly. */
+var repainting=false;
+function repaintSettings(id){
+  var body=$("setBody");
+  body.style.webkitTransform="translateZ(0)"; void body.offsetHeight;
+  requestAnimationFrame(function(){ body.style.webkitTransform=""; void body.offsetHeight; });
+  if(repainting) return;
+  repainting=true;
+  setTimeout(function(){ if(S.screen==="sSet" && S.tab===id) renderTab(id); repainting=false; }, 140);
+}
 buildTabs();
 var _openSettings=openSettings;
 openSettings=function(){ if(S.tab && !TABS.some(function(t){ return t.id===S.tab; })) S.tab=null; return _openSettings(); };

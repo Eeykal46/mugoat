@@ -388,7 +388,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             // Every 10 s: physical RAM, process usage, OS headroom and game-file reads.
             healthTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.logHealth() }
         }
-        if line == "WORLD_READY" || line.contains("\"label\":\"First frame\"") || line.contains("\"world\":true") {
+        // Only the 3D world (not the first loading/legal screens) ends the loading screen and shows the touch buttons.
+        if line == "WORLD_READY" {
             diagnosticsOverlay?.isHidden = true
             if !launcher.isHidden { launcher.send("sleep") }
             UIView.animate(withDuration: 0.35) {
@@ -1326,8 +1327,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
 
     private func shareLauncherLogs() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let files = ["native-port.log", "native-port-previous.log"].map { documents.appendingPathComponent($0) }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        let files = ["native-port.log", "native-port-previous.log", "crash-last.log", "crash-previous.log"].map { documents.appendingPathComponent($0) }
+            .filter { ((try? FileManager.default.attributesOfItem(atPath: $0.path))?[.size] as? NSNumber)?.intValue ?? 0 > 0 }
         let perf = documents.appendingPathComponent("PerfLogs", isDirectory: true)
         let perfFiles = ((try? FileManager.default.contentsOfDirectory(at: perf, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "csv" }.sorted { $0.lastPathComponent > $1.lastPathComponent }.prefix(3)
