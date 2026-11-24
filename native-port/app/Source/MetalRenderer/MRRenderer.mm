@@ -14,6 +14,7 @@
 #include "BCTextureDecoder.h"
 #include "NativeFrameRate.h"
 #include "NativeSmoothGovernor.h"
+#include "NativeFrameMetrics.h"
 #import <UIKit/UIKit.h>
 #include <TargetConditionals.h>
 #include <pthread.h>
@@ -282,6 +283,9 @@ static std::atomic<double> presentInterval{0};
 static std::mutex smoothLock;
 static PGPresentIntervalWindow smoothWindow;
 static std::atomic<bool> smoothWorld{false};
+// Performance log: the same world frames over about a minute (Documents > PerfLogs, written by the app).
+static PGFrameMetricsWindow perfWindow;
+static double perfGPUMs = 0;
 enum CommitReason { CPresent, CFence, CReadback, CIdle, CReasons };
 static const char *kCommitNames[CReasons] = {"present", "fence", "readback", "idle queries"};
 static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
@@ -320,6 +324,7 @@ static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
 			double gpu = (done.GPUEndTime - done.GPUStartTime) * 1000;
 			std::lock_guard<std::mutex> g(smoothLock);
 			smoothWindow.addGPU(gpu);
+			if (std::isfinite(gpu) && gpu > 0 && gpu < 1000) perfGPUMs += gpu;
 		}
 		if (done.status == MTLCommandBufferStatusError) logOnce("cmderr" + std::to_string(done.error.code), "Metal renderer: command buffer failed: %s", done.error.localizedDescription.UTF8String);
 		for (auto &f : *callbacks) f();
@@ -1899,7 +1904,11 @@ static void present(uint32_t texId) {
 	double now = CACurrentMediaTime();
 	if (R->statPresentAt) {
 		double gap = (now - R->statPresentAt) * 1000; if (gap > 50) R->longFrames++; if (gap > R->worstFrameMs) R->worstFrameMs = gap;
-		if (R->worldSent) { std::lock_guard<std::mutex> g(smoothLock); smoothWindow.record(gap); }
+		if (R->worldSent && gap > 0 && gap <= 2000) {
+			std::lock_guard<std::mutex> g(smoothLock);
+			smoothWindow.record(gap);
+			perfWindow.record(gap, R->draws - R->drawsAtPresent, PGFrameWork{});
+		}
 	}
 	R->statPresentAt = now;
 	R->lastPresent.store(now);
@@ -2367,6 +2376,18 @@ extern "C" bool PGMetalRendererTakeSmoothSample(double lateMs, uint32_t *frames,
 	bool any = w.frames > 0;
 	w.reset();
 	return any;
+}
+
+extern "C" bool PGMetalRendererTakePerfWindow(uint64_t *frames, uint64_t *over33, uint64_t *over50, uint64_t *over100,
+	double *fps, double *p95Ms, double *p99Ms, double *maxMs, double *gpuMsPerFrame) {
+	if (!frames || !over33 || !over50 || !over100 || !fps || !p95Ms || !p99Ms || !maxMs || !gpuMsPerFrame) return false;
+	std::lock_guard<std::mutex> g(mr::smoothLock);
+	PGFrameMetricsSnapshot s = mr::perfWindow.snapshot();
+	*frames = s.frames; *over33 = s.over33; *over50 = s.over50; *over100 = s.over100;
+	*fps = s.fps(); *p95Ms = s.p95Ms; *p99Ms = s.p99Ms; *maxMs = s.maxMs;
+	*gpuMsPerFrame = s.frames ? mr::perfGPUMs / s.frames : 0;
+	mr::perfWindow.reset(); mr::perfGPUMs = 0;
+	return s.frames > 0;
 }
 
 extern "C" double PGMetalRendererFPS(void) {

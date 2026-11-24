@@ -32,6 +32,10 @@ bool PGSmoothTick(int32_t thermalState, PGSmoothDecision *out) {
 	}
 	return changed;
 }
+bool PGTakePerfWindow(PGPerfWindow *o) {
+	if (!o) return false;
+	return PGMetalRendererTakePerfWindow(&o->frames, &o->over33, &o->over50, &o->over100, &o->fps, &o->p95Ms, &o->p99Ms, &o->maxMs, &o->gpuMsPerFrame);
+}
 void PGStartGraphics(void *memory, uint64_t memorySize, uint64_t ring, uint64_t ringSize, uint64_t) {
 	if (!PGMetalRendererAvailable()) { pg_log("The Metal shader library is missing from the app: rebuild with the game's shaders."); return; }
 	PGStartMetalRenderer(memory, memorySize, ring, ringSize);

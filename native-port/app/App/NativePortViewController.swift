@@ -373,6 +373,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             PGSetTargetingMode(Int32(GameSettings.shared.targetingMode))
             if worldReadyAt == nil { worldReadyAt = CACurrentMediaTime() }
             GameSettings.shared.markBootStable()
+            PerfLog.shared.start()
         }
         if line == "WORLD_READY", healthTimer == nil {
             // Every 10 s: physical RAM, process usage, OS headroom and game-file reads.
@@ -1380,6 +1381,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         if engineStarted, worldReadyAt != nil, now - lastSmoothTick >= 1.0 {
             lastSmoothTick = now
             smoothTick()
+        }
+        if engineStarted, worldReadyAt != nil {
+            PerfLog.shared.tick(now: now, preset: bootedPreset.title, smoothScale: smoothScale,
+                                frameLimit: smoothLimit >= 0 ? smoothLimit : GameSettings.frameLimitCode(GameSettings.shared.frameRateCap))
         }
         if now - lastFPSLabelUpdate >= 0.25 {
             let fps = PGRenderedFramesPerSecond()

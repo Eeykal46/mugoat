@@ -24,6 +24,13 @@ typedef struct {
 void PGSmoothConfigure(int32_t playerFrameLimit, double displayHz, int32_t minScalePermille);
 // Takes one window from the renderer and steps the governor. True when scale or frame limit changed.
 bool PGSmoothTick(int32_t thermalState, PGSmoothDecision *out);
+
+// One performance-log window of world frames (the app takes one a minute). False when no frame was recorded.
+typedef struct {
+	uint64_t frames, over33, over50, over100;	// frames longer than 33/50/100 ms
+	double fps, p95Ms, p99Ms, maxMs, gpuMsPerFrame;
+} PGPerfWindow;
+bool PGTakePerfWindow(PGPerfWindow *out);
 #ifdef __cplusplus
 }
 #endif
