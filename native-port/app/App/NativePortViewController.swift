@@ -381,6 +381,13 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
            let progress = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let pct = progress["pct"] as? Int {
             let label = (progress["label"] as? String).map { " · " + $0 } ?? ""
             launcher.send("toast", ["kind": pct >= 100 ? "ok" : "spin", "text": "Loading \(pct)%" + label])
+            if pct < 100 && (progress["label"] as? String) == "First frame" { launcher.loadingStage(.city) }
+        }
+        // The loading screen's stages follow the boot's log milestones.
+        if launcher.isLoading, !launcher.isHidden {
+            if line == "Running the real engine's static constructors." { launcher.loadingStage(.starting) }
+            else if line.hasPrefix("Metal renderer: ") && line.contains("precompiled shaders") { launcher.loadingStage(.graphics) }
+            else if line.contains("[RAGE] DVD Reader") { launcher.loadingStage(.files) }
         }
         if line == "WORLD_READY" {
             PGSetTargetingMode(Int32(GameSettings.shared.targetingMode))
@@ -396,12 +403,14 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         if line == "WORLD_READY" {
             diagnosticsOverlay?.isHidden = true
             if !launcher.isHidden { launcher.send("sleep") }
-            UIView.animate(withDuration: 0.35) {
+            launcher.loadingStage(.ready)
+            UIView.animate(withDuration: 0.45, delay: launcher.isLoading ? 0.6 : 0, options: []) {
                 self.home.alpha = 0
                 self.launcher.alpha = 0
             } completion: { _ in
                 self.home.isHidden = true
                 self.launcher.isHidden = true
+                self.launcher.endLoading()
             }
             touchControlsAvailable = true
             fpsLabel.isHidden = false
@@ -1311,7 +1320,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
                 if !trimmed.isEmpty { OnlineSettings.name = trimmed }
             }
             self.startEngine()
-            if self.engineStarted { self.launcher.showLoading("LOADING…") } else { self.launcher.send("idle") }
+            if self.engineStarted {
+                let tips = (self.launcherContent["tips"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+                self.launcher.showLoading(mode: mode, tips: tips)
+            } else { self.launcher.send("idle") }
         }
         launcher.onAction = { [weak self] action in
             guard let self, self.presentedViewController == nil else { return }

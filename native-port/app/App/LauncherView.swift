@@ -14,29 +14,13 @@ final class LauncherView: UIView, WKNavigationDelegate {
     var onAction: ((String) -> Void)?
 
     private var web: WKWebView?
-    private let loadingLogo = UIImageView(image: UIImage(named: "LaunchLogo"))
-    private let loadingLabel = UILabel()
+    private var loadingView: LoadingView?
+    private var loadingMode = "story"
     private static let storageKey = "MCLauncherLocalStorage"
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
-        loadingLogo.contentMode = .scaleAspectFit
-        loadingLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
-        loadingLabel.textColor = UIColor(white: 1, alpha: 0.75)
-        loadingLabel.textAlignment = .center
-        loadingLabel.numberOfLines = 2
-        for item in [loadingLogo, loadingLabel] as [UIView] {
-            item.translatesAutoresizingMaskIntoConstraints = false
-            item.isHidden = true
-            addSubview(item)
-        }
-        NSLayoutConstraint.activate([
-            loadingLogo.centerXAnchor.constraint(equalTo: centerXAnchor), loadingLogo.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -24),
-            loadingLogo.widthAnchor.constraint(equalToConstant: 96), loadingLogo.heightAnchor.constraint(equalToConstant: 96),
-            loadingLabel.topAnchor.constraint(equalTo: loadingLogo.bottomAnchor, constant: 18),
-            loadingLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24), loadingLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24)
-        ])
         makeWebView()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -69,9 +53,9 @@ final class LauncherView: UIView, WKNavigationDelegate {
         self.web = web
     }
 
-    /// While the game loads: the web launcher is closed (its process, memory and GPU work go away) and a
-    /// plain logo with the loading text stays on screen. The game needs that memory to load.
-    func showLoading(_ text: String) {
+    /// While the game loads: the web launcher is closed (its process, memory and GPU work go away) and the
+    /// native loading screen (LoadingView) stays on screen. The game needs that memory to load.
+    func showLoading(mode: String, tips: [String]) {
         if let web {
             web.stopLoading()
             web.configuration.userContentController.removeAllScriptMessageHandlers()
@@ -79,11 +63,25 @@ final class LauncherView: UIView, WKNavigationDelegate {
             web.removeFromSuperview()
             self.web = nil
         }
-        loadingLogo.isHidden = false
-        loadingLabel.isHidden = false
-        loadingLabel.text = text
+        loadingMode = mode
+        guard loadingView == nil else { return }
+        let view = LoadingView(mode: mode, tips: tips)
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: leadingAnchor), view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor), view.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+        loadingView = view
     }
     var isLoading: Bool { web == nil }
+    func loadingStage(_ stage: LoadingView.Stage) { loadingView?.advance(to: stage) }
+    /// The world shows: the loading screen and its image go away.
+    func endLoading() {
+        loadingView?.stopTimers()
+        loadingView?.removeFromSuperview()
+        loadingView = nil
+    }
 
     /// `MCL.on(event, data)` in the page. `data` must be a JSON object or array.
     func send(_ event: String, _ data: [String: Any] = [:]) {
@@ -97,7 +95,10 @@ final class LauncherView: UIView, WKNavigationDelegate {
         let script = "(function(d,e){\(keep ? "if(e==='settings')window.__mcSettings=JSON.stringify(d);else if(d.settings)window.__mcSettings=JSON.stringify(d.settings);" : "")if(window.MCL)MCL.on(e,d);})(\(text),\(nameText)[0]);"
         DispatchQueue.main.async {
             guard let web = self.web else {
-                if event == "toast" || event == "playError", let text = (data["text"] ?? data["message"]) as? String { self.loadingLabel.text = text.uppercased() }
+                if event == "playError", let text = (data["text"] ?? data["message"]) as? String {
+                    if self.loadingView == nil { self.showLoading(mode: self.loadingMode, tips: []) }	// the game stopped after the world showed
+                    self.loadingView?.showError(text)
+                }
                 return
             }
             web.evaluateJavaScript(script, completionHandler: nil)

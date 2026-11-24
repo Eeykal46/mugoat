@@ -30,6 +30,8 @@ test -s Build/Online/libmugoat_online.a
 mkdir -p Resources
 cp "$MIRROR/data/manifest.json" Resources/manifest.json
 test -s Resources/manifest.json
+# Fonts for the native loading screen (before xcodegen lists GeneratedResources).
+"$PY" Scripts/make_fonts.py || true
 if [ "${PG_REUSE_PREPARED:-0}" = "1" ] && [ -s Generated/native-prepared-v1.txt ] && [ -s Generated/game_0.c ] && [ -s Generated/MugoatCommands.c ] && [ -s GeneratedResources/shaders-iphoneos.metallib ]; then
   xcodegen generate --spec project.yml
 else
