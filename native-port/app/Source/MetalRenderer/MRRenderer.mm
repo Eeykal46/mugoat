@@ -35,7 +35,7 @@ namespace mr {
 static struct TextureStats {
 	std::atomic<int64_t> gpuBytes{0}, bcGameBytes{0}, bcGpuBytes{0}, shadowBytes{0};
 	std::atomic<int64_t> kindBytes[8][2];		// [BC kind][sRGB]: GPU bytes, to see where decoded memory goes
-	std::atomic<uint64_t> createFailures{0}, createRetries{0}, decodeFailures{0}, bcReadbacks{0}, bcCopies{0}, lossyTextures{0};
+	std::atomic<uint64_t> createFailures{0}, createRetries{0}, decodeFailures{0}, bcReadbacks{0}, bcCopies{0}, lossyTextures{0}, gpuBlockCopies{0};
 } gTextureStats;
 Texture::~Texture() {
 	gTextureStats.gpuBytes -= (int64_t)gpuBytes;
@@ -1644,6 +1644,51 @@ static void dispatch(uint32_t x, uint32_t y, uint32_t z) {
 }
 
 // ---- copies -------------------------------------------------------------------------------------------------------------
+// GPU-encoded BC blocks for a decoded BC texture: read back with the next command buffer, then decoded
+// and uploaded on the render thread (flushDecodedBlocks, at the next command) through the normal upload.
+struct DecodedBlocks { uint32_t id; Texture *tex; uint32_t mip, slice, x, y, w, h, blockRowBytes, blockRows; std::vector<uint8_t> blocks; };
+static std::mutex decodedLock;
+static std::vector<DecodedBlocks> decodedPending;
+static std::atomic<bool> decodedReady{false};
+static void gpuBlocksToDecoded(Texture *s, Texture *d, uint32_t sLayer, uint32_t sMip, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h,
+                               uint32_t dLayer, uint32_t dMip, uint32_t dx, uint32_t dy) {
+	uint32_t rowBytes = w * bcBlockBytes(d->bcKind), bpr = (rowBytes + 15) & ~15u;
+	Alloc a = frameAlloc((size_t)bpr * h, 16);
+	[blitEncoder() copyFromTexture:s->tex sourceSlice:sLayer sourceLevel:sMip sourceOrigin:MTLOriginMake(sx, sy, 0) sourceSize:MTLSizeMake(w, h, 1)
+	                      toBuffer:a.buf destinationOffset:a.off destinationBytesPerRow:bpr destinationBytesPerImage:bpr * h];
+	s->lastUse = R->serial;
+	uint32_t id = d->oid;
+	uint8_t *src = a.ptr;
+	R->onComplete.push_back([=]() {
+		DecodedBlocks u{id, d, dMip, dLayer, dx, dy, w * 4, h * 4, rowBytes, h, {}};
+		u.blocks.resize((size_t)rowBytes * h);
+		for (uint32_t row = 0; row < h; row++) memcpy(u.blocks.data() + (size_t)row * rowBytes, src + (size_t)row * bpr, rowBytes);
+		std::lock_guard<std::mutex> g(decodedLock);
+		decodedPending.push_back(std::move(u));
+		decodedReady.store(true, std::memory_order_release);
+	});
+	gTextureStats.gpuBlockCopies++;
+	logOnce("gpubc" + std::to_string(s->format) + "-" + std::to_string(d->bcKind), "Metal renderer: GPU-encoded BC%d blocks copied into a decoded texture (%ux%u blocks)", d->bcKind, w, h);
+	commit(CReadback);
+}
+static void flushDecodedBlocks() {
+	std::vector<DecodedBlocks> list;
+	{
+		std::lock_guard<std::mutex> g(decodedLock);
+		list.swap(decodedPending);
+		decodedReady.store(false, std::memory_order_relaxed);
+	}
+	for (auto &u : list) {
+		Texture *t = texture(u.id);
+		if (!t || t != u.tex || !t->tex || u.mip >= t->mips) continue;		// gone or replaced meanwhile
+		std::vector<uint32_t> cmd(12 + (u.blocks.size() + 3) / 4);
+		cmd[0] = u.id; cmd[1] = u.mip; cmd[2] = u.slice; cmd[3] = u.x; cmd[4] = u.y; cmd[5] = 0;
+		cmd[6] = u.w; cmd[7] = u.h; cmd[8] = 1; cmd[9] = u.blockRowBytes; cmd[10] = u.blockRows; cmd[11] = (uint32_t)u.blocks.size();
+		memcpy(cmd.data() + 12, u.blocks.data(), u.blocks.size());
+		uploadTexture(cmd.data());
+	}
+}
+
 static void copyRegion(const uint32_t *p) {
 	uint32_t dstId = p[0], dstSub = p[1], dx = p[2], dy = p[3], dz = p[4], srcId = p[5], srcSub = p[6], hasBox = p[7];
 	uint32_t l = p[8], t = p[9], f = p[10], r = p[11], b = p[12], bk = p[13];
@@ -1712,6 +1757,14 @@ static void copyRegion(const uint32_t *p) {
 		          toBuffer:a.buf destinationOffset:a.off destinationBytesPerRow:bpr destinationBytesPerImage:bpr * h];
 		[e copyFromBuffer:a.buf sourceOffset:a.off sourceBytesPerRow:bpr sourceBytesPerImage:bpr * h sourceSize:MTLSizeMake(w, h, 1)
 		        toTexture:d->tex destinationSlice:d->dim == 3 ? 0 : dLayer destinationLevel:dMip destinationOrigin:MTLOriginMake(dx, dy, d->dim == 3 ? dz : 0)];
+	} else if (!s->bcKind && d->bcKind && !d->bcNative && s->tex && !s->isDepth && s->samples == 1 && s->dim != 3 && d->dim != 3 &&
+	           bytesPerTexel(s->format) == bcBlockBytes(d->bcKind)) {
+		// The game encoded BC blocks on the GPU (one 64/128-bit texel per block) and copies them into a BC
+		// texture, which this GPU holds decoded: read the blocks back, decode them on the CPU, upload.
+		w = std::min(hasBox ? r - l : mw, mw - std::min(mw, sx)); h = std::min(hasBox ? b - t : mh, mh - std::min(mh, sy));
+		if (!w || !h) return;
+		gpuBlocksToDecoded(s, d, sLayer, sMip, sx, sy, w, h, dLayer, dMip, dx, dy);
+		return;
 	} else {
 		logOnce("copyfmt" + std::to_string(s->format) + "-" + std::to_string(d->format), "Metal renderer: copy between formats %lu and %lu not supported", (unsigned long)s->format, (unsigned long)d->format);
 		return;
@@ -2158,7 +2211,10 @@ static void execute(uint32_t op, const uint32_t *p, uint32_t n) {
 	case DESTROY_OBJECT: destroyObject(p[0]); break;
 	case CLEAR_RT: { PendingClear c{p[0], p[1], p[2], false, {pf[3], pf[4], pf[5], pf[6]}, 0, 0, 0}; if (texture(p[0])) addClear(c); break; }
 	case CLEAR_DS: { PendingClear c{p[0], p[1], p[2], true, {}, p[3], pf[4], p[5]}; if (texture(p[0])) addClear(c); break; }
-	case PRESENT: present(p[0]); break;
+	case PRESENT:
+		// Decoded GPU-encoded BC blocks are uploaded once a frame, after its draws (no pass is split).
+		if (decodedReady.load(std::memory_order_acquire)) flushDecodedBlocks();
+		present(p[0]); break;
 	case FENCE: {
 		uint64_t addr = p[0] + ((uint64_t)p[1] << 32);
 		uint32_t value = p[2];

@@ -245,6 +245,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             self.setNeedsUpdateOfPrefersPointerLocked()
         }
         view.addSubview(touchControls)
+        // The overlay stays above the touch controls so a tap reaches it.
+        view.bringSubviewToFront(fpsLabel)
+        view.bringSubviewToFront(hud)
         NSLayoutConstraint.activate([
             touchControls.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             touchControls.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -292,11 +295,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(lookForGameFiles), name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(installChanged), name: .gameInstallChanged, object: nil)
         displayLink = CADisplayLink(target: self, selector: #selector(pollController))
-        // ProMotion screens only run above 60 Hz when the app asks: L10n.text("Unlocked") asks for up to 120.
-        if GameSettings.shared.effectiveFrameRateCap == 0 {
-            let top = Float(UIScreen.main.maximumFramesPerSecond)
-            displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, top), maximum: top, preferred: top)
-        }
+        applyDisplayLinkRate()
         displayLink?.add(to: .main, forMode: .common)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAudioEngineConfigurationChange), name: .AVAudioEngineConfigurationChange, object: audioEngine)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAudioRouteChange), name: AVAudioSession.routeChangeNotification, object: nil)
@@ -519,6 +518,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             return
         }
         if GameSettings.shared.textureCompression { unsetenv("PG_NO_LOSSY") } else { setenv("PG_NO_LOSSY", "1", 1) }
+        applyDisplayLinkRate()
         let cores = GameSettings.shared.engineCores
         if cores > 0 { setenv("PG_ENGINE_CORES", "\(cores)", 1) } else { unsetenv("PG_ENGINE_CORES") }
         metalView.isPaused = true
@@ -1834,6 +1834,13 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             KeyboardMouse.shared.inject(dx: dx, dy: dy)
             appendLog("Test: mouse moved \(dx), \(dy)")
         }
+    }
+    /// ProMotion screens only run above 60 Hz when the app asks: Unlocked and Auto ask for up to 120.
+    private func applyDisplayLinkRate() {
+        let top = Float(UIScreen.main.maximumFramesPerSecond)
+        displayLink?.preferredFrameRateRange = GameSettings.shared.effectiveFrameRateCap == 0
+            ? CAFrameRateRange(minimum: min(60, top), maximum: top, preferred: top)
+            : CAFrameRateRange(minimum: min(30, top), maximum: min(60, top), preferred: min(60, top))
     }
     private var overlayInWorld = false
     /// Shows the chosen overlay once the world is up: the original FPS label or the performance HUD.

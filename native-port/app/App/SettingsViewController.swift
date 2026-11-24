@@ -207,12 +207,16 @@ final class SettingsViewController: UITableViewController {
                     content.text = L10n.text("Frame rate")
                     content.secondaryText = L10n.text("Higher uses more power and heat; 30 FPS is steadiest. Unlocked goes up to 120 on ProMotion iPhones.")
                     let button = UIButton(type: .system)
-                    button.setTitle(GameSettings.frameRateTitle(settings.frameRateCap) + " ▾", for: .normal)
+                    button.setTitle((settings.frameRateAuto ? "Auto" : GameSettings.frameRateTitle(settings.frameRateCap)) + " ▾", for: .normal)
                     button.showsMenuAsPrimaryAction = true
                     button.accessibilityLabel = L10n.text("Frame rate")
-                    button.menu = UIMenu(children: [30, 60, 0].map { cap in
-                        UIAction(title: GameSettings.frameRateTitle(cap), state: cap == settings.frameRateCap ? .on : .off) { [weak self] _ in
-                            self?.settings.frameRateCap = cap; self?.reloadFooters(); self?.tableView.reloadData()
+                    // Auto (the launcher's default) aims for the screen's rate and steps down for heat; a cap turns it off.
+                    let auto = UIAction(title: "Auto", state: settings.frameRateAuto ? .on : .off) { [weak self] _ in
+                        self?.settings.frameRateAuto = true; self?.reloadFooters(); self?.tableView.reloadData()
+                    }
+                    button.menu = UIMenu(children: [auto] + [30, 60, 0].map { cap in
+                        UIAction(title: GameSettings.frameRateTitle(cap), state: !settings.frameRateAuto && cap == settings.frameRateCap ? .on : .off) { [weak self] _ in
+                            self?.settings.frameRateAuto = false; self?.settings.frameRateCap = cap; self?.reloadFooters(); self?.tableView.reloadData()
                         }
                     })
                     button.sizeToFit()
