@@ -174,44 +174,136 @@ applyContent=function(c){
   if(S.bgc && S.bgc.video) H.bg({state:"ready", url:S.bgc.video, src:S.bgc.video});
 };
 
-/* ---------- Settings (iOS) ---------- */
+/* ---------- Settings: the original iOS app's settings, in the launcher's look ---------- */
 IC.gr='<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>';
+IC.gy='<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>';
 IC.gm='<path d="M12 2l3 7h7l-5.5 4.5 2 7L12 16l-6.5 4.5 2-7L2 9h7z"/>';
 IC.dv='<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>';
 function act(name){ return function(){ call("action", name); }; }
-TABS=[
+function ch(k){ var c=(S.settings&&S.settings._choices)||{}; return c[k]||[]; }
+function is(k, v){ return S.settings && String(S.settings[k])===v; }
+function on(k){ return S.settings && (S.settings[k]===true || S.settings[k]==="true"); }
+function buildTabs(){
+  var f=S.settings||{}, fa=f.filesActions||[];
+  TABS=[
   {id:"gr",name:"Graphics",opts:[
-    {k:"preset",n:"Graphics Preset",d:"Tahap grafik. Berkuat kuasa bila mula main.",t:"seg",v:["Battery","Smooth","Balanced","Sharp","High","Max"]},
+    {k:"preset",n:"Graphics Preset",d:"Tahap grafik. Disyorkan untuk iPhone ini: "+(f.recommended||"—")+". Preset lebih tinggi boleh kehabisan memori atau panas.",t:"pick",v:ch("preset")},
+    {k:"resolution",n:"Resolution",d:(f.renderSize||"")+" · berkuat kuasa bila mula main.",t:"pick",v:ch("resolution")},
+    {k:"fillScreen",n:"Fill Screen",d:"Render ikut bentuk skrin, bukan 16:9.",t:"sw"},
+    {k:"ram",n:"Game Memory",d:"Lalai guna semua RAM. Kalau tak dapat masuk game atau selalu crash, pilih lebih rendah. Minimum 3 GB.",t:"pick",v:ch("ram")},
     {k:"fps",n:"Frame Rate",d:"30 paling stabil. Unlocked sampai 120 pada skrin ProMotion.",t:"seg",v:["30","60","Unlocked"]},
     {k:"autoSmooth",n:"Auto Smooth",d:"Turunkan FPS bila frame lewat atau telefon panas, naik semula bila lega.",t:"sw"},
-    {k:"framePacing",n:"Frame Pacing",d:"Setiap frame kekal sama lama di skrin bila FPS bawah kadar skrin.",t:"sw"},
-    {k:"fillScreen",n:"Fill Screen",d:"Render ikut bentuk skrin, bukan 16:9.",t:"sw"},
-    {n:"Advanced Settings",d:"Resolusi, memori enjin dan tetapan lain.",t:"btn",b:"OPEN",f:act("advanced")}]},
+    {k:"framePacing",n:"Frame Pacing",d:"Setiap frame kekal sama lama di skrin bila FPS bawah kadar skrin.",t:"sw"}]},
   {id:"c",name:"Controls",opts:[
-    {n:"Edit Controls Layout",d:"Gerak, besar/kecilkan atau sorok butang skrin.",t:"btn",b:"EDIT",f:act("layout")},
-    {k:"fireAims",n:"Fire Also Aims",d:"Tekan tembak terus bidik sekali.",t:"sw"},
-    {k:"invertLook",n:"Invert Look",d:"Terbalikkan arah pandangan atas/bawah.",t:"sw"},
-    {k:"gyroAim",n:"Gyro Aim",d:"Condongkan telefon untuk bidik.",t:"seg",v:["Off","Aiming","Always"]},
-    {k:"hideTouch",n:"Hide Touch With Controller",d:"Sorok butang skrin bila guna controller.",t:"sw"}]},
+    {n:"Edit Controls Layout",d:f.layoutCustom?"Susun atur sendiri. Gerak, besar/kecilkan atau sorok butang.":"Gerak, besar/kecilkan atau sorok butang skrin.",t:"btn",b:"EDIT",f:act("layout")},
+    {k:"lookSpeed",n:"Camera Stick Speed",d:"Laju kamera bila guna jari.",t:"slider",min:0.5,max:10,step:0.1},
+    {k:"aimSpeed",n:"Aim Stick Speed",d:"Laju kamera semasa membidik.",t:"slider",min:0.5,max:10,step:0.1},
+    {k:"buttonSize",n:"Button Size",d:"Saiz butang sentuh.",t:"slider",min:0.7,max:1.5,step:0.05},
+    {k:"buttonOpacity",n:"Button Opacity",d:"Kelegapan butang sentuh.",t:"slider",min:0.2,max:1,step:0.05},
+    {k:"targeting",n:"Targeting",d:"Cara bidik: lock-on, bantuan bidik atau bidik bebas.",t:"pick",v:ch("targeting")},
+    {k:"fireAims",n:"Fire Also Aims",d:"Tekan tembak terus kunci sasaran dulu, macam GTA mobile klasik.",t:"sw"},
+    {k:"invertLook",n:"Invert Look (Y)",d:"Tarik ke atas untuk pandang ke bawah.",t:"sw"},
+    {k:"steeringButtons",n:"Steering Buttons",d:"Guna butang kiri/kanan untuk stereng kereta, motor dan bot.",t:"sw"},
+    {k:"hideTouch",n:"Hide With Controller",d:"Sorok butang sentuh bila controller disambung.",t:"sw"},
+    {k:"keyboardMouse",n:"Keyboard & Mouse",d:"Main guna kawalan PC (WASD, tetikus).",t:"sw"}]},
+  {id:"gy",name:"Gyro",opts:[
+    {k:"gyroAim",n:"Gyro Aim",d:"Gerakkan telefon untuk halus bidikan.",t:"pick",v:ch("gyroAim")},
+    {k:"gyroSens",n:"Gyro Sensitivity",d:"Kepekaan gyro.",t:"slider",min:0.2,max:3,step:0.1,fmt:function(v){ return Number(v).toFixed(1)+"×"; },show:function(){ return !is("gyroAim",ch("gyroAim")[0]||"Off"); }},
+    {k:"gyroInvert",n:"Invert Vertical",d:"Terbalikkan arah gyro atas/bawah.",t:"sw",show:function(){ return !is("gyroAim",ch("gyroAim")[0]||"Off"); }},
+    {k:"tiltSteer",n:"Tilt Steering",d:"Condongkan telefon macam stereng. Assist tambah kawalan halus, Tilt ganti stereng sentuh.",t:"pick",v:ch("tiltSteer")},
+    {k:"tiltLock",n:"Full Lock Angle",d:"Darjah condong untuk stereng penuh.",t:"slider",min:10,max:45,step:1,fmt:function(v){ return Math.round(v)+"°"; },show:function(){ return !is("tiltSteer",ch("tiltSteer")[0]||"Off"); }}]},
   {id:"gm",name:"Game",opts:[
-    {n:"Game Files",d:"Tambah atau tukar folder fail game GTA V.",t:"btn",b:"OPEN",f:act("files")},
-    {n:"Cheat Menu",d:"Buka menu cheat (trainer). Story Mode dan Free Roam sahaja.",t:"btn",b:"OPEN",f:act("cheat")},
+    {n:"Game Folder",d:"Tambah atau tukar folder fail game GTA V (data/ dan b/).",t:"btn",b:"OPEN",f:act("files")},
+    {k:"filesStatus",n:"Offline Game Files",d:"Simpan semua fail game dalam iPhone supaya tak perlu stream.",t:"info",show:function(){ return !!f.filesStatus; }},
+    {n:"Download All Files",t:"btn",b:"DOWNLOAD",f:act("filesStart"),show:function(){ return fa.indexOf("start")>=0; }},
+    {n:"Pause Download",t:"btn",b:"PAUSE",f:act("filesPause"),show:function(){ return fa.indexOf("pause")>=0; }},
+    {n:"Resume Download",t:"btn",b:"RESUME",f:act("filesResume"),show:function(){ return fa.indexOf("resume")>=0; }},
+    {n:"Cancel Download",t:"btn",b:"CANCEL",f:act("filesCancel"),show:function(){ return fa.indexOf("cancel")>=0; }},
+    {n:"Remove Downloaded Files",t:"btn",b:"REMOVE",f:act("filesRemove"),show:function(){ return fa.indexOf("remove")>=0; }},
+    {n:"Cheat Menu (Trainer)",d:"Bertahan, senjata, panggil kenderaan, tukar cuaca… Story Mode dan Free Roam sahaja.",t:"btn",b:"OPEN",f:act("cheat")},
     {n:"Mod Manager",d:"Pasang .zip, .oiv atau .asi. Restart game selepas tukar mod.",t:"btn",b:"OPEN",f:act("mods")},
-    {n:"Saves",d:"Backup dan restore save game.",t:"btn",b:"OPEN",f:act("saves")},
-    {n:"Online Server",d:"Alamat server Online.",t:"btn",b:"OPEN",f:act("online")}]},
-  {id:"l",name:"Launcher",opts:[
-    {k:"music",n:"Launcher Music",d:"Main muzik latar dalam launcher.",t:"sw",local:true},
-    {k:"fx",n:"Visual Effects",d:"Pilih Low kalau telefon kau perlahan atau cepat panas.",t:"seg",v:["High","Low"],local:true},
-    {k:"fxmode",n:"Effect Style",d:"Gaya kesan latar launcher.",t:"seg",v:["Glitch","Terminal","Static","Grid"],local:true}]},
+    {n:"Saves & Backup",d:"Lihat fail save, buat backup atau restore.",t:"btn",b:"OPEN",f:act("saves")},
+    {n:"Online Server",d:"Alamat server untuk mod Online.",t:"btn",b:"OPEN",f:act("online")}]},
   {id:"dv",name:"Device",opts:[
     {n:"App Version",t:"info",k:"version"},
     {n:"Device",t:"info",k:"device"},
-    {n:"Share Logs",d:"Hantar fail log kepada admin bila ada masalah.",t:"btn",b:"SHARE",f:act("logs")},
+    {n:"Share Logs",d:"Simpan atau hantar log run ini dan run sebelumnya kepada admin Malay City.",t:"btn",b:"SHARE",f:act("logs")},
+    {k:"language",n:"Menu Language",d:"Bahasa untuk skrin menu iOS (fail game, mod, save).",t:"seg",v:ch("language")},
     {n:"Credits",d:"Berdasarkan Mugoat (iOSVN), Muguet (c22dev) dan GTA V Port (Kevin Erik). Lesen GPL-3.0 / MIT.",t:"btn",b:"VIEW",f:act("licenses")}]}
-];
+  ];
+}
+function fmtVal(o, v){ if(o.fmt) return o.fmt(v); var n=Number(v); return isFinite(n) ? (o.step<1 ? n.toFixed(o.step<0.1?2:1) : String(Math.round(n))) : "—"; }
+function pickList(o){
+  var cur=String(S.settings[o.k]==null?"":S.settings[o.k]), pick=cur;
+  modal(o.n.toUpperCase(),"",[{t:"CANCEL"},{t:"SELECT",red:true,f:function(){ if(pick!==cur) setVal(o.k, pick, false); }}]);
+  var p=$("mP"); p.style.display="none";
+  var list=document.createElement("div"); list.id="modeList"; p.parentNode.insertBefore(list, p.nextSibling);
+  list.style.cssText="display:flex;flex-direction:column;gap:6px;margin-top:2px;max-height:56vh;overflow-y:auto";
+  function draw(){ list.innerHTML="";
+    o.v.forEach(function(v){ var e=document.createElement("button"); e.className="btn cb fx "+(v===pick?"hot":"glass");
+      e.style.cssText="height:38px;justify-content:flex-start;padding:0 14px;width:100%;font-size:13px;flex:none"; e.textContent=v;
+      e.onclick=function(){ pick=v; draw(); }; list.appendChild(e); }); }
+  draw();
+}
+renderTab=function(id){
+  buildTabs();
+  S.tab=id; renderTabs();
+  var tab=tabsList().filter(function(x){return x.id===id;})[0]||tabsList()[0], body=$("setBody"); body.innerHTML="";
+  tab.opts.forEach(function(o){
+    if(o.show && !o.show()) return;
+    var r=document.createElement("div"); r.className="opt";
+    var l=document.createElement("div"); l.innerHTML='<div class="n">'+esc(o.n)+'</div>'+(o.d?'<div class="d">'+esc(o.d)+'</div>':"");
+    r.appendChild(l);
+    var cur=o.k?S.settings[o.k]:null;
+    if(o.t==="sw"){
+      var v=cur===true||cur==="true", sw=document.createElement("button"); sw.className="sw cb fx"+(v?" on":""); sw.innerHTML="<i></i>";
+      sw.onclick=function(){ setVal(o.k, !v, false); }; r.appendChild(sw);
+    } else if(o.t==="seg"){
+      var g=document.createElement("div"); g.className="seg";
+      o.v.forEach(function(x){ var b=document.createElement("button"); b.className="btn cb fx"+(String(cur)===String(x)?" hot":" glass"); b.textContent=x; b.onclick=function(){ setVal(o.k,x,false); }; g.appendChild(b); });
+      r.appendChild(g);
+    } else if(o.t==="pick"){
+      var pb=document.createElement("button"); pb.className="btn cb glass fx"; pb.style.cssText="flex:none;max-width:58%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+      pb.textContent=(cur==null||cur===""?"—":String(cur))+" ▾"; pb.onclick=function(){ if(o.v.length) pickList(o); }; r.appendChild(pb);
+    } else if(o.t==="slider"){
+      var w=document.createElement("div"); w.style.cssText="display:flex;align-items:center;gap:10px;flex:none";
+      var lab=document.createElement("div"); lab.className="mono"; lab.style.cssText="font-size:11px;min-width:42px;text-align:right"; lab.textContent=fmtVal(o,cur);
+      var rg=document.createElement("input"); rg.type="range"; rg.min=o.min; rg.max=o.max; rg.step=o.step; rg.value=Number(cur)||o.min;
+      rg.style.cssText="width:150px;accent-color:#ff2e4d";
+      rg.oninput=function(){ lab.textContent=fmtVal(o,rg.value); };
+      rg.onchange=function(){ setVal(o.k, rg.value, false); };
+      w.appendChild(lab); w.appendChild(rg); r.appendChild(w);
+    } else if(o.t==="btn"){
+      var b=document.createElement("button"); b.className="btn cb glass fx"; b.textContent=o.b||"OK"; b.onclick=o.f; r.appendChild(b);
+    } else if(o.t==="info"){
+      var i=document.createElement("div"); i.className="info"; i.textContent=(cur==null||cur==="")?"—":String(cur); r.appendChild(i);
+    }
+    body.appendChild(r);
+  });
+};
+buildTabs();
 var _openSettings=openSettings;
 openSettings=function(){ if(S.tab && !TABS.some(function(t){ return t.id===S.tab; })) S.tab=null; return _openSettings(); };
 $("bSet").onclick=function(){ if(S.screen==="sMain"||S.screen==="sNews") openSettings(); };
+
+/* ---------- social: Discord / TikTok / Website always shown; a missing link says so ---------- */
+var DEF_SOCIAL=[{name:"discord",url:""},{name:"tiktok",url:""},{name:"website",url:"https://malaycity.com"}];
+socialList=function(){
+  var have=(S.social||[]).slice(), out=[];
+  DEF_SOCIAL.forEach(function(d){                    // Discord, TikTok, Website first, in that order
+    var m=have.filter(function(x){ return String(x.name||"").toLowerCase()===d.name; })[0];
+    out.push(m||d);
+  });
+  have.forEach(function(x){ if(DEF_SOCIAL.every(function(d){ return d.name!==String(x.name||"").toLowerCase(); })) out.push(x); });
+  return out;
+};
+var _renderSocial=renderSocial;
+renderSocial=function(){
+  _renderSocial();
+  var L=socialList().slice(0,6), bs=$("social").children;
+  for(var i=0;i<bs.length && i<L.length;i++) if(!String(L[i].url||"").trim()) bs[i].onclick=function(){ island("warn","Link coming soon"); };
+};
+renderSocial();
 
 renderPanel();
 })();

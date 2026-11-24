@@ -111,8 +111,6 @@ targets:
         CFBundleVersion: "20"
         UILaunchScreen:
           UIColorName: LaunchBackground
-          UIImageName: LaunchLogo
-          UIImageRespectsSafeAreaInsets: true
         # Launcher content (news, links, hero); the Android file is used until the iOS one exists.
         MCLauncherJSON: "https://malaycity.com/ios/launcher.json"
         MCLauncherJSONFallback: "https://malaycity.com/mobile/launcher.json"

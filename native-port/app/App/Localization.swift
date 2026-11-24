@@ -2,7 +2,8 @@ import Foundation
 
 enum L10n {
     static var language: String {
-        get { UserDefaults.standard.string(forKey: "MugoatLanguage") == "en" ? "en" : "vi" }
+        // Malay City: English unless the player picks Tiếng Việt.
+        get { UserDefaults.standard.string(forKey: "MugoatLanguage") == "vi" ? "vi" : "en" }
         set { UserDefaults.standard.set(newValue == "en" ? "en" : "vi", forKey: "MugoatLanguage") }
     }
     static let translations: [String: [String: String]] = {

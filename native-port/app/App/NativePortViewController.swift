@@ -271,8 +271,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         }
         try? Data().write(to: logFile!)
         LogWriter.shared.open(logFile!)
-        appendLog("Mugoat \(Theme.appVersion) on iOS \(UIDevice.current.systemVersion)")
-        appendLog("Native UIKit + Metal host. Engine compiled into the app; no WebView or JIT.")
+        appendLog("Malay City \(Theme.appVersion) on iOS \(UIDevice.current.systemVersion)")
+        appendLog("Native UIKit + Metal host. Engine compiled into the app (no JIT); HTML launcher closed before the game loads.")
         appendLog("Metal device: \(device?.name ?? "unavailable")")
         GameFolder.log = { [weak self] line in self?.appendLog(line) }
         // A game folder moved into Files › On My iPhone › Mugoat is found without any picking.
@@ -508,7 +508,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         appendLog("Game mode: \(mode.title)\(mode == .sandbox ? " on " + GameSettings.sandboxMapTitles[GameSettings.shared.sandboxMap] : "")")
         bootedPreset = GameSettings.shared.graphicsPreset
         appendLog("Graphics: " + GraphicsConfiguration.apply(GameSettings.shared, screen: view.bounds.size))
-        appendLog("Device: " + GameSettings.shared.tier.summary)
+        appendLog("Device: " + GameSettings.shared.tier.summary + " (\(GameSettings.shared.tier.model), \(GameSettings.shared.tier.physicalMemoryMB) MB reported)")
         GameSettings.shared.markBootStarted()
         launchButton.setTitle(L10n.text("Đang tải…"), for: .disabled); launchButton.setNeedsUpdateConfiguration()
         appendLog("Native touch controls support held buttons, sprint and weapon selection.")
@@ -1029,8 +1029,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     // MARK: Malay City launcher
 
     private static let launcherModeKey = "MCLauncherMode"
-    private static let presetNames = ["Battery", "Smooth", "Balanced", "Sharp", "High", "Max"]
-    private static let gyroNames = ["Off", "Aiming", "Always"]
+    private static let presetNames = ["Battery Saver", "Smooth", "Balanced", "Sharp", "High", "Max (4K)"]
     /// story, freeroam or online; nil until the player picks one (then remembered).
     private var launcherMode: String? {
         get { UserDefaults.standard.string(forKey: Self.launcherModeKey).flatMap { ["story", "freeroam", "online"].contains($0) ? $0 : nil } }
@@ -1044,18 +1043,84 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         return "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
     }
 
+    private var launcherRAMChoices: [Int] {
+        let s = GameSettings.shared
+        let physical = s.tier.physicalMemoryMB
+        var steps = [0] + [3072, 3584, 4096, 4608, 5120, 6144, 8192, 12288].filter { $0 < physical }
+        if s.engineMemoryMB > 0 && !steps.contains(s.engineMemoryMB) { steps.append(s.engineMemoryMB); steps.sort() }
+        return steps
+    }
+    private func ramLabel(_ mb: Int) -> String {
+        mb == 0 ? String(format: "All RAM (%.1f GB)", Double(GameSettings.shared.tier.physicalMemoryMB) / 1024) : String(format: "%.1f GB", Double(mb) / 1024)
+    }
+    private func resolutionLabel(_ height: Int) -> String { height == 0 ? "Auto" : "\(height)p" }
+
+    /// Offline copy of the game files (streaming setups): status text and the actions that apply now.
+    private func launcherFilesState() -> (String, [String]) {
+        let preloader = AssetPreloader.shared
+        let has = preloader.cachedBytes > 0
+        let percent = Int((preloader.fraction * 100).rounded(.down))
+        let progress = "\(percent)% · \(AssetPreloader.format(preloader.cachedBytes)) / \(AssetPreloader.format(preloader.totalBytes))"
+        switch preloader.phase {
+        case .unavailable(let reason): return (L10n.text(reason), [])
+        case .idle: return (has ? progress : "Not downloaded", has ? ["start", "remove"] : ["start"])
+        case .downloading: return ("Downloading " + progress, ["pause", "cancel"])
+        case .paused: return ("Paused " + progress, has ? ["resume", "cancel", "remove"] : ["resume", "cancel"])
+        case .complete: return ("All files on device · " + AssetPreloader.format(preloader.totalBytes), ["remove"])
+        }
+    }
+
     private func launcherSettings() -> [String: Any] {
         let s = GameSettings.shared
-        return [
-            "preset": Self.presetNames[min(max(s.graphicsPreset.rawValue, 0), Self.presetNames.count - 1)],
-            "fps": s.frameRateCap == 0 ? "Unlocked" : "\(s.frameRateCap)",
-            "autoSmooth": s.autoSmooth, "framePacing": s.framePacing, "fillScreen": s.matchScreenShape,
-            "fireAims": s.fireAlsoAims, "invertLook": s.invertLookY,
-            "gyroAim": Self.gyroNames[min(max(s.gyroAim.rawValue, 0), Self.gyroNames.count - 1)],
-            "hideTouch": s.hideTouchWithController,
-            "mode": launcherMode ?? "",
-            "version": appVersionText, "device": s.tier.summary, "server": OnlineSettings.server
-        ]
+        let screen = view.window?.windowScene?.screen.bounds.size ?? UIScreen.main.bounds.size
+        let size = GraphicsConfiguration.size(for: s.graphicsPreset, renderHeight: s.renderHeight, screen: screen, matchScreenShape: s.matchScreenShape)
+        let files = launcherFilesState()
+        let preset = min(max(s.graphicsPreset.rawValue, 0), Self.presetNames.count - 1)
+        let recommended = min(max(s.tier.recommended.rawValue, 0), Self.presetNames.count - 1)
+        let targeting = min(max(s.targetingMode, 0), GameSettings.targetingTitles.count - 1)
+        var choices: [String: [String]] = [:]
+        choices["preset"] = Self.presetNames
+        choices["resolution"] = ([0] + GraphicsConfiguration.resolutionChoices).map { resolutionLabel($0) }
+        choices["ram"] = launcherRAMChoices.map { ramLabel($0) }
+        choices["targeting"] = GameSettings.targetingTitles
+        choices["gyroAim"] = GyroAimMode.allCases.map { $0.title }
+        choices["tiltSteer"] = TiltSteerMode.allCases.map { $0.title }
+        choices["language"] = ["English", "Tiếng Việt"]
+        var d: [String: Any] = [:]
+        d["_choices"] = choices
+        d["preset"] = Self.presetNames[preset]
+        d["recommended"] = Self.presetNames[recommended]
+        d["resolution"] = resolutionLabel(s.renderHeight)
+        d["renderSize"] = "Renders at \(size.0)×\(size.1)"
+        d["fillScreen"] = s.matchScreenShape
+        d["ram"] = ramLabel(s.engineMemoryMB)
+        d["fps"] = s.frameRateCap == 0 ? "Unlocked" : "\(s.frameRateCap)"
+        d["autoSmooth"] = s.autoSmooth
+        d["framePacing"] = s.framePacing
+        d["layoutCustom"] = ControlsLayout.isCustomized
+        d["lookSpeed"] = s.lookSensitivity
+        d["aimSpeed"] = s.aimSensitivity
+        d["buttonSize"] = s.controlScale
+        d["buttonOpacity"] = s.controlOpacity
+        d["targeting"] = GameSettings.targetingTitles[targeting]
+        d["fireAims"] = s.fireAlsoAims
+        d["invertLook"] = s.invertLookY
+        d["steeringButtons"] = s.steeringButtons
+        d["hideTouch"] = s.hideTouchWithController
+        d["keyboardMouse"] = s.keyboardMouse
+        d["gyroAim"] = s.gyroAim.title
+        d["gyroSens"] = s.gyroSensitivity
+        d["gyroInvert"] = s.gyroInvertY
+        d["tiltSteer"] = s.tiltSteer.title
+        d["tiltLock"] = s.tiltFullLock
+        d["filesStatus"] = files.0
+        d["filesActions"] = files.1
+        d["language"] = L10n.language == "vi" ? "Tiếng Việt" : "English"
+        d["mode"] = launcherMode ?? ""
+        d["version"] = appVersionText
+        d["device"] = s.tier.summary
+        d["server"] = OnlineSettings.server
+        return d
     }
 
     /// Story and Free Roam play offline; Online is Free Roam on the Malay City server.
@@ -1069,17 +1134,75 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private func applyLauncherSetting(_ key: String, _ value: String) {
         let s = GameSettings.shared
         let on = value == "true"
+        let number = Double(value)
         switch key {
         case "mode": if ["story", "freeroam", "online"].contains(value) { applyLauncherMode(value) }
         case "preset": if let i = Self.presetNames.firstIndex(of: value), let preset = GraphicsPreset(rawValue: i) { s.graphicsPreset = preset }
+        case "resolution":
+            let heights = [0] + GraphicsConfiguration.resolutionChoices
+            if let height = heights.first(where: { resolutionLabel($0) == value }) { s.renderHeight = height; applyLiveResolution() }
+        case "fillScreen": s.matchScreenShape = on; applyLiveResolution()
+        case "ram": if let mb = launcherRAMChoices.first(where: { ramLabel($0) == value }) { s.engineMemoryMB = mb }
         case "fps": s.frameRateCap = value == "Unlocked" ? 0 : value == "60" ? 60 : 30
         case "autoSmooth": s.autoSmooth = on
         case "framePacing": s.framePacing = on
-        case "fillScreen": s.matchScreenShape = on; applyLiveResolution()
+        case "lookSpeed": if let number { s.lookSensitivity = min(max(number, 0.5), 10) }
+        case "aimSpeed": if let number { s.aimSensitivity = min(max(number, 0.5), 10) }
+        case "buttonSize": if let number { s.controlScale = min(max(number, 0.7), 1.5); touchControls.updateVisibility() }
+        case "buttonOpacity": if let number { s.controlOpacity = min(max(number, 0.2), 1); touchControls.updateVisibility() }
+        case "targeting":
+            if let i = GameSettings.targetingTitles.firstIndex(of: value) { s.targetingMode = i; PGSetTargetingMode(Int32(i)) }
         case "fireAims": s.fireAlsoAims = on
         case "invertLook": s.invertLookY = on
-        case "gyroAim": if let i = Self.gyroNames.firstIndex(of: value), let mode = GyroAimMode(rawValue: i) { s.gyroAim = mode }
+        case "steeringButtons": s.steeringButtons = on; touchControls.updateVisibility()
         case "hideTouch": s.hideTouchWithController = on; touchControls.updateVisibility()
+        case "keyboardMouse": s.keyboardMouse = on; if !on { KeyboardMouse.shared.releaseAll() }
+        case "gyroAim": if let mode = GyroAimMode.allCases.first(where: { $0.title == value }) { s.gyroAim = mode }
+        case "gyroSens": if let number { s.gyroSensitivity = (min(max(number, 0.2), 3) * 10).rounded() / 10 }
+        case "gyroInvert": s.gyroInvertY = on
+        case "tiltSteer": if let mode = TiltSteerMode.allCases.first(where: { $0.title == value }) { s.tiltSteer = mode }
+        case "tiltLock": if let number { s.tiltFullLock = number.rounded() }
+        case "language":
+            L10n.language = value == "Tiếng Việt" ? "vi" : "en"
+            refreshLanguage()
+        default: return
+        }
+        launcher.send("settings", launcherSettings())
+    }
+
+    private func launcherFilesAction(_ action: String) {
+        let preloader = AssetPreloader.shared
+        let alert = { (title: String, message: String) in
+            let box = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            box.addAction(UIAlertAction(title: "OK", style: .default))
+            self.present(box, animated: true)
+        }
+        switch action {
+        case "filesStart":
+            let confirm = UIAlertController(title: "Download all game files?",
+                message: "This saves \(AssetPreloader.format(preloader.missingBytes)) more on this iPhone (\(AssetPreloader.format(preloader.availableBytes())) free). Wi-Fi recommended.",
+                preferredStyle: .alert)
+            confirm.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            confirm.addAction(UIAlertAction(title: "Download", style: .default) { [weak self] _ in
+                if let message = preloader.start() { alert("Can't download", message) }
+                self?.launcher.send("settings", self?.launcherSettings() ?? [:])
+            })
+            present(confirm, animated: true)
+        case "filesResume": if let message = preloader.start() { alert("Can't download", message) }
+        case "filesPause": preloader.pause()
+        case "filesCancel": preloader.cancel()
+        case "filesRemove":
+            guard !engineStarted else { return }
+            let confirm = UIAlertController(title: "Remove downloaded files?",
+                message: "Frees \(AssetPreloader.format(preloader.cachedBytes)). The game streams from the server again.", preferredStyle: .alert)
+            confirm.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            confirm.addAction(UIAlertAction(title: "Remove", style: .destructive) { [weak self] _ in
+                preloader.removeDownloads { message in
+                    if let message { alert("Can't remove files", message) }
+                    self?.launcher.send("settings", self?.launcherSettings() ?? [:])
+                }
+            })
+            present(confirm, animated: true)
         default: return
         }
         launcher.send("settings", launcherSettings())
@@ -1094,6 +1217,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         ])
         home.isHidden = true
         NotificationCenter.default.addObserver(self, selector: #selector(launcherForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+        NotificationCenter.default.addObserver(forName: .assetPreloadChanged, object: nil, queue: .main) { [weak self] _ in
+            guard let self, !self.launcher.isHidden, !self.launcher.isLoading else { return }
+            self.launcher.send("settings", self.launcherSettings())
+        }
         // Keep a saved mode consistent with the native settings it stands for.
         if let mode = launcherMode { applyLauncherMode(mode) }
         launcher.onReady = { [weak self] in
@@ -1140,8 +1267,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
                 if !trimmed.isEmpty { OnlineSettings.name = trimmed }
             }
             self.startEngine()
-            self.launcher.send(self.engineStarted ? "launched" : "idle")
-            if self.engineStarted { self.launcher.send("toast", ["kind": "spin", "text": "Loading…"]) }
+            if self.engineStarted { self.launcher.showLoading("LOADING…") } else { self.launcher.send("idle") }
         }
         launcher.onAction = { [weak self] action in
             guard let self, self.presentedViewController == nil else { return }
@@ -1155,6 +1281,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             case "advanced": self.showSettings()
             case "logs": self.shareLauncherLogs()
             case "licenses": self.showLauncherCredits()
+            case "filesStart", "filesResume", "filesPause", "filesCancel", "filesRemove": self.launcherFilesAction(action)
             default: break
             }
         }
