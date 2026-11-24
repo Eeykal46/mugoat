@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   workflow_call:
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: mugoat-native-ipa
   cancel-in-progress: false
@@ -56,6 +56,11 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     steps:
+      - name: Refuse to build in a public repository
+        if: ${{ github.event.repository.private != true }}
+        run: |
+          echo "The IPA contains the engine translated from your own game files: build it only in a private repository." >&2
+          exit 1
       - uses: actions/checkout@v7.0.1
       - name: Normalize source and check signing metadata
         run: |
@@ -90,14 +95,40 @@ jobs:
           clang -std=c11 -I native-port/app/Source native-port/app/Tests/touch_camera.c -o "$RUNNER_TEMP/mugoat-touch-camera-tests"
           "$RUNNER_TEMP/mugoat-touch-camera-tests"
       - name: Fetch and validate compatible engine and shaders
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GAME_FILES_SERVER: ${{ secrets.MUGOAT_GAME_FILES_SERVER }}
         run: |
           python3 native-port/app/Tests/download_ranges.py
           python3 native-port/app/Tests/shader_build.py
           xcrun clang++ -std=c++20 -fobjc-arc -framework Foundation -framework Metal native-port/app/Tests/fallback_textures.mm -o "$RUNNER_TEMP/mugoat-fallback-tests"
           "$RUNNER_TEMP/mugoat-fallback-tests"
-          mkdir -p "$RUNNER_TEMP/game-files/b/8b0b5899ed"
-          MUGUET_WASM_DEST="$RUNNER_TEMP/game-files/b/8b0b5899ed/game.wasm" node native-port/app/Scripts/download-wasm.cjs
-          /usr/bin/python3 native-port/app/Scripts/fetch_game_files.py --server 'https://hml.sinimediata.com.br' --out "$RUNNER_TEMP/game-files"
+          mkdir -p "$RUNNER_TEMP/game-files"
+          # Your own build inputs, from your own copy of the game files: either your own server
+          # (secret MUGOAT_GAME_FILES_SERVER) or a zip attached to this private repository's release
+          # "build-inputs" holding data/manifest.json, b/8b0b5899ed/game.wasm and b/8b0b5899ed/shaders/.
+          if [ -n "$GAME_FILES_SERVER" ]; then
+            /usr/bin/python3 native-port/app/Scripts/fetch_game_files.py --server "$GAME_FILES_SERVER" --out "$RUNNER_TEMP/game-files"
+          else
+            gh release download build-inputs --repo "$GITHUB_REPOSITORY" --pattern '*.zip' --dir "$RUNNER_TEMP/inputs" || {
+              echo "No build inputs: attach your zip to the release 'build-inputs' of this repository, or set MUGOAT_GAME_FILES_SERVER." >&2; exit 1; }
+            /usr/bin/python3 - "$RUNNER_TEMP/inputs" <<'PY'
+          import sys, zipfile
+          from pathlib import Path
+          base = Path(sys.argv[1]); out = (base / 'x').resolve(); out.mkdir(exist_ok=True)
+          for z in sorted(base.glob('*.zip')):
+              with zipfile.ZipFile(z) as archive:
+                  for info in archive.infolist():
+                      target = (out / info.filename).resolve()
+                      if out != target and out not in target.parents: raise SystemExit(f'{z.name}: entry escapes the folder: {info.filename}')
+                      if (info.external_attr >> 16) & 0o170000 == 0o120000: raise SystemExit(f'{z.name}: symlink entry refused: {info.filename}')
+                  archive.extractall(out)
+          PY
+            root=$(dirname "$(dirname "$(dirname "$(find "$RUNNER_TEMP/inputs/x" -path '*/b/8b0b5899ed/game.wasm' -print -quit)")")")
+            [ -f "$root/b/8b0b5899ed/game.wasm" ] && [ -f "$root/data/manifest.json" ] || { echo "The zip needs data/manifest.json and b/8b0b5899ed/game.wasm (with shaders/)." >&2; exit 1; }
+            ditto "$root/data" "$RUNNER_TEMP/game-files/data"
+            ditto "$root/b" "$RUNNER_TEMP/game-files/b"
+          fi
           /usr/bin/python3 native-port/app/Scripts/check_game_files.py --mirror "$RUNNER_TEMP/game-files"
       - name: Install build tools
         run: |
@@ -139,36 +170,16 @@ jobs:
           sh Scripts/check_runtime.sh
           clang -std=c11 -O2 Tests/bc_textures.c Source/BCTextureDecoder.c -o "$RUNNER_TEMP/mugoat-bc-tests"
           "$RUNNER_TEMP/mugoat-bc-tests"
-      - name: Encrypt output
-        working-directory: native-port
-        env:
-          MUGUET_ARTIFACT_KEY: ${{ secrets.MUGUET_ARTIFACT_KEY_V4 }}
-        run: |
-          node app/Scripts/ipa-artifact.cjs encrypt Mugoat-AppleID-Free.ipa Mugoat-AppleID-Free.enc
-          node app/Scripts/ipa-artifact.cjs encrypt Mugoat-Cert-Paid.ipa Mugoat-Cert-Paid.enc
-      - name: Publish Mugoat.ipa to Release v2.0
-        working-directory: native-port
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cp Mugoat-AppleID-Free.ipa Mugoat.ipa
-          gh release view v2.0 --repo "$GITHUB_REPOSITORY" || gh release create v2.0 --title "Mugoat iOS v2.0 — Voice Chat 3D Proximity, Sandbox Online, Fix Loa & Tối Ưu Độ Ổn Định" --notes "Bản phát hành chính thức Mugoat iOS v2.0" --repo "$GITHUB_REPOSITORY"
-          gh release upload v2.0 Mugoat.ipa SHA256SUMS.txt Native-IPA-Free-validation.json --repo "$GITHUB_REPOSITORY" --clobber
-          gh release upload v1.1.7 Mugoat.ipa SHA256SUMS.txt Native-IPA-Free-validation.json --repo "$GITHUB_REPOSITORY" --clobber || true
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: Mugoat-Native-IPAs-encrypted
-          path: |
-            native-port/Mugoat-AppleID-Free.enc
-            native-port/Mugoat-Cert-Paid.enc
-            native-port/SHA256SUMS.txt
-            native-port/Native-IPA-*-validation.json
-          if-no-files-found: error
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: Mugoat-Native-IPA
-          path: native-port/Mugoat-AppleID-Free.ipa
-          if-no-files-found: ignore
+          path: |
+            native-port/Mugoat-AppleID-Free.ipa
+            native-port/Mugoat-Cert-Paid.ipa
+            native-port/SHA256SUMS.txt
+            native-port/Native-IPA-*-validation.json
+          retention-days: 7
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
