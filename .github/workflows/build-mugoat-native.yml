@@ -113,6 +113,8 @@ jobs:
           "$RUNNER_TEMP/mugoat-fps-tests"
           clang++ -std=c++20 -I Source Tests/frame_metrics.cpp -o "$RUNNER_TEMP/mugoat-frame-tests"
           "$RUNNER_TEMP/mugoat-frame-tests"
+          clang++ -std=c++20 -Wall -Wextra -Werror -I Source Tests/smooth_governor.cpp -o "$RUNNER_TEMP/mugoat-smooth-tests"
+          "$RUNNER_TEMP/mugoat-smooth-tests"
           cp Resources/Localizations.json "$RUNNER_TEMP/Localizations.json"
           swiftc App/Localization.swift App/SaveStore.swift Tests/save_store.swift -o "$RUNNER_TEMP/mugoat-save-tests"
           "$RUNNER_TEMP/mugoat-save-tests"

@@ -2118,6 +2118,10 @@ void PGStartEngine(const char *path, const char *filesRoot, PGLogCallback callba
   pthread_attr_t attributes;
   pthread_attr_init(&attributes);
   pthread_attr_setstacksize(&attributes, 16 * 1024 * 1024);
+#ifdef __APPLE__
+  // The game's main loop runs on this thread: same class as the Metal renderer thread.
+  pthread_attr_set_qos_class_np(&attributes, QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
   pthread_t thread;
   int result = pthread_create(&thread, &attributes, boot, NULL);
   pthread_attr_destroy(&attributes);

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -10,6 +11,19 @@ void PGAttachMetalLayer(void *layer);
 void PGStartGraphics(void *memory,uint64_t memorySize,uint64_t ring,uint64_t ringSize,uint64_t debug);
 // The GPU samples BC textures as they are (otherwise they are decoded, about 4 times larger).
 int PGGPUReadsBC(void);
+
+// Auto-smooth (NativeSmoothGovernor.h). Configure when the engine starts with the player's frame-limit
+// code (0 off, 1 = 60, 2 = 30), the screen's maximum rate and the lowest resolution share in permille.
+typedef struct {
+	int32_t scalePermille;		// share of the chosen render height to use now
+	int32_t frameLimit;			// engine frame-limit code for PGSetFrameLimit
+	double presentInterval;		// seconds for PGSetPresentPacing (0: present as soon as possible)
+	double p95Ms, lateFraction, gpuMsPerFrame;	// the window behind this decision, for the log/HUD
+	uint32_t frames;
+} PGSmoothDecision;
+void PGSmoothConfigure(int32_t playerFrameLimit, double displayHz, int32_t minScalePermille);
+// Takes one window from the renderer and steps the governor. True when scale or frame limit changed.
+bool PGSmoothTick(int32_t thermalState, PGSmoothDecision *out);
 #ifdef __cplusplus
 }
 #endif

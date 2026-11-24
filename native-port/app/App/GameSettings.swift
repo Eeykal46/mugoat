@@ -155,6 +155,19 @@ final class GameSettings {
         set { defaults.set(newValue, forKey: "frameRateCap") }
     }
     static func frameRateTitle(_ cap: Int) -> String { cap == 0 ? L10n.text("Unlocked") : "\(cap) FPS" }
+    /// Auto-smooth: lowers resolution, then the frame cap, when frames go late or the phone heats up,
+    /// and raises them back when there is headroom. Never above the chosen resolution or frame rate.
+    var autoSmooth: Bool {
+        get { defaults.object(forKey: "autoSmooth") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "autoSmooth") }
+    }
+    /// Frame pacing: with a cap below the screen rate, each frame stays up for the same time.
+    var framePacing: Bool {
+        get { defaults.object(forKey: "framePacing") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "framePacing") }
+    }
+    /// Engine frame-limit code for a cap: 0 off, 1 = 60 FPS, 2 = 30 FPS.
+    static func frameLimitCode(_ cap: Int) -> Int32 { cap == 0 ? 0 : cap == 60 ? 1 : 2 }
 
     // Crash fallback: a launch that never reached a stable world is treated
     // as a memory kill, and the last preset that worked is restored.

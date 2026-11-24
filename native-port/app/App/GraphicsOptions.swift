@@ -122,12 +122,13 @@ enum GraphicsConfiguration {
         defer { pointers.forEach { free($0) } }
         pointers.withUnsafeMutableBufferPointer { buffer in
             buffer.baseAddress!.withMemoryRebound(to: UnsafePointer<CChar>?.self, capacity: buffer.count) {
-                PGConfigureEngine($0, UInt32(buffer.count), Int32(width), Int32(height), settings.frameRateCap == 0 ? 0 : settings.frameRateCap == 60 ? 1 : 2)
+                PGConfigureEngine($0, UInt32(buffer.count), Int32(width), Int32(height), GameSettings.frameLimitCode(settings.frameRateCap))
             }
         }
         // Even frame pacing when the cap is below the screen's refresh rate (30 on 60 Hz, 30/60 on 120 Hz).
         let cap = settings.frameRateCap
-        PGSetPresentPacing(cap > 0 && cap < UIScreen.main.maximumFramesPerSecond ? 1.0 / Double(cap) : 0)
+        PGSetPresentPacing(settings.framePacing && cap > 0 && cap < UIScreen.main.maximumFramesPerSecond ? 1.0 / Double(cap) : 0)
+        PGSmoothConfigure(GameSettings.frameLimitCode(cap), Double(UIScreen.main.maximumFramesPerSecond), 550)
         return "\(preset.title) \(width)×\(height) at \(GameSettings.frameRateTitle(settings.frameRateCap))"
     }
 }

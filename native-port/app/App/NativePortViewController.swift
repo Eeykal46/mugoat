@@ -77,6 +77,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private var bootedPreset = GameSettings.shared.graphicsPreset
     /// Render height multiplier while the phone is hot (1 = the chosen resolution).
     private var thermalScale = 1.0
+    /// Auto-smooth state: share of the chosen render height and the engine frame-limit code now in use.
+    private var smoothScale = 1.0
+    private var smoothLimit: Int32 = -1
+    private var lastSmoothTick: CFTimeInterval = 0
     private var bootedMode: GameMode?
     private var stableTimer: Timer?
     private var healthTimer: Timer?
@@ -1285,10 +1289,34 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             }
         }
     }
+    /// One auto-smooth window (about a second of world frames). The governor also applies the thermal ceilings.
+    private func smoothTick() {
+        let settings = GameSettings.shared
+        guard settings.autoSmooth else { return }
+        var decision = PGSmoothDecision()
+        let changed = PGSmoothTick(Int32(ProcessInfo.processInfo.thermalState.rawValue), &decision)
+        guard changed else { return }
+        let scale = Double(decision.scalePermille) / 1000
+        if decision.frameLimit != smoothLimit {
+            smoothLimit = decision.frameLimit
+            PGSetFrameLimit(decision.frameLimit)
+            PGSetPresentPacing(settings.framePacing ? decision.presentInterval : 0)
+        }
+        appendLog(String(format: "Auto-smooth: resolution ×%.2f, frame limit %d (p95 %.1f ms, %.0f%% late, GPU %.1f ms/frame, %u frames, thermal %ld)",
+                         scale, decision.frameLimit, decision.p95Ms, decision.lateFraction * 100, decision.gpuMsPerFrame, decision.frames,
+                         ProcessInfo.processInfo.thermalState.rawValue))
+        if scale != smoothScale {
+            smoothScale = scale
+            applyLiveResolution()
+        }
+    }
+
     /// The engine follows back-buffer size changes while running.
     /// A hot phone lowers its clocks and the frame rate drops for minutes. Rendering fewer pixels while
     /// iOS reports serious/critical heat keeps it smoother and lets it cool; the resolution returns after.
     @objc private func thermalStateChanged() {
+        // With auto-smooth on, the governor reads the thermal state every window and caps on its own.
+        guard !GameSettings.shared.autoSmooth else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let state = ProcessInfo.processInfo.thermalState
@@ -1303,7 +1331,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         guard engineStarted else { return }
         let settings = GameSettings.shared
         let chosenHeight = settings.renderHeight > 0 ? settings.renderHeight : bootedPreset.height
-        let renderHeight = thermalScale < 1 ? Int(Double(chosenHeight) * thermalScale) : settings.renderHeight
+        let share = settings.autoSmooth ? smoothScale : thermalScale
+        let renderHeight = share < 1 ? Int(Double(chosenHeight) * share) : settings.renderHeight
         let (width, height) = GraphicsConfiguration.size(for: bootedPreset, renderHeight: renderHeight, screen: view.bounds.size, matchScreenShape: settings.matchScreenShape)
         PGSetBackBufferSize(Int32(width), Int32(height))
         appendLog("Graphics: live resize to \(width)×\(height)")
@@ -1348,6 +1377,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             return
         }
         let now = CACurrentMediaTime()
+        if engineStarted, worldReadyAt != nil, now - lastSmoothTick >= 1.0 {
+            lastSmoothTick = now
+            smoothTick()
+        }
         if now - lastFPSLabelUpdate >= 0.25 {
             let fps = PGRenderedFramesPerSecond()
             let frames = fps > 0 ? String(format: "%.0f FPS", fps) : "— FPS"

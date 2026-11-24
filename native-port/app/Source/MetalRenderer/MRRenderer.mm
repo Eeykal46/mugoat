@@ -13,6 +13,7 @@
 #include "MRFallbackTextures.h"
 #include "BCTextureDecoder.h"
 #include "NativeFrameRate.h"
+#include "NativeSmoothGovernor.h"
 #import <UIKit/UIKit.h>
 #include <TargetConditionals.h>
 #include <pthread.h>
@@ -276,6 +277,11 @@ static void storeResult(uint64_t addr, uint64_t value, uint32_t seq);
 // Frame pacing: with a 30/60 FPS cap below the screen's refresh rate, each frame is held for the same
 // number of refreshes instead of alternating 1-2-3 (the visible judder of an uneven frame rate).
 static std::atomic<double> presentInterval{0};
+// Auto-smooth samples: present intervals (renderer thread) and GPU time (Metal completion threads),
+// taken once per window by the app's main thread through PGMetalRendererTakeSmoothSample.
+static std::mutex smoothLock;
+static PGPresentIntervalWindow smoothWindow;
+static std::atomic<bool> smoothWorld{false};
 enum CommitReason { CPresent, CFence, CReadback, CIdle, CReasons };
 static const char *kCommitNames[CReasons] = {"present", "fence", "readback", "idle queries"};
 static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
@@ -297,13 +303,24 @@ static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
 		if (R->visNext > OCCLUSION_SLOTS - 1024 && !R->activeOcclusion) R->visNext = 0;
 	}
 	id<MTLCommandBuffer> cb = commandBuffer();
-	// Paced presents (afterMinimumDuration) are disabled until tested on devices: plain present as in 1.1.7.
-	if (drawable) [cb presentDrawable:drawable];
+	// Paced present: with a cap below the screen rate each frame stays up for 1/cap, so 30 or 60 FPS
+	// arrive evenly instead of alternating short and long frames. 0 (the app's Frame pacing switch off,
+	// or no cap) presents as soon as possible, as before.
+	if (drawable) {
+		double interval = presentInterval.load(std::memory_order_relaxed);
+		if (interval > 0) [cb presentDrawable:drawable afterMinimumDuration:interval];
+		else [cb presentDrawable:drawable];
+	}
 	uint64_t serial = R->serial++;
 	auto *callbacks = new std::vector<std::function<void()>>();
 	callbacks->swap(R->onComplete);
 	Renderer *r = R;
 	[cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+		if (smoothWorld.load(std::memory_order_relaxed) && done.status == MTLCommandBufferStatusCompleted) {
+			double gpu = (done.GPUEndTime - done.GPUStartTime) * 1000;
+			std::lock_guard<std::mutex> g(smoothLock);
+			smoothWindow.addGPU(gpu);
+		}
 		if (done.status == MTLCommandBufferStatusError) logOnce("cmderr" + std::to_string(done.error.code), "Metal renderer: command buffer failed: %s", done.error.localizedDescription.UTF8String);
 		for (auto &f : *callbacks) f();
 		delete callbacks;
@@ -1880,7 +1897,10 @@ static void present(uint32_t texId) {
 	f.lastSerial = R->serial - 1;
 	R->presents++;
 	double now = CACurrentMediaTime();
-	if (R->statPresentAt) { double gap = (now - R->statPresentAt) * 1000; if (gap > 50) R->longFrames++; if (gap > R->worstFrameMs) R->worstFrameMs = gap; }
+	if (R->statPresentAt) {
+		double gap = (now - R->statPresentAt) * 1000; if (gap > 50) R->longFrames++; if (gap > R->worstFrameMs) R->worstFrameMs = gap;
+		if (R->worldSent) { std::lock_guard<std::mutex> g(smoothLock); smoothWindow.record(gap); }
+	}
 	R->statPresentAt = now;
 	R->lastPresent.store(now);
 	if (R->fpsWindow.record(now)) R->fps.store(R->fpsWindow.rate);
@@ -1894,6 +1914,7 @@ static void present(uint32_t texId) {
 		if (R->pendingSkips != R->pendingAtPresent) R->worldClean = 0; else if (!R->worldClean) R->worldClean = ms;
 		if ((R->worldClean && ms - R->worldClean >= 1500) || ms - R->worldSince >= 60000) {
 			R->worldSent = true;
+			smoothWorld.store(true);
 			logf("Metal renderer: world shown after %.1f s of pipeline compiles (%u pipelines made)", (ms - R->worldSince) / 1000, R->pipesMade);
 			pg_log("{\"pct\":100,\"label\":\"Ready\",\"world\":true}");
 			pg_log("WORLD_READY");
@@ -2336,6 +2357,16 @@ extern "C" void PGStartMetalRenderer(void *memory, uint64_t memorySize, uint64_t
 
 extern "C" void PGMetalRendererSetPresentInterval(double seconds) {
 	mr::presentInterval.store(std::isfinite(seconds) && seconds > 0 && seconds <= 0.1 ? seconds : 0);
+}
+
+extern "C" bool PGMetalRendererTakeSmoothSample(double lateMs, uint32_t *frames, double *p95Ms, double *lateFraction, double *gpuMsPerFrame) {
+	if (!frames || !p95Ms || !lateFraction || !gpuMsPerFrame) return false;
+	std::lock_guard<std::mutex> g(mr::smoothLock);
+	PGPresentIntervalWindow &w = mr::smoothWindow;
+	*frames = w.frames; *p95Ms = w.percentile(.95); *lateFraction = w.fractionAtLeast(lateMs); *gpuMsPerFrame = w.gpuMsPerFrame();
+	bool any = w.frames > 0;
+	w.reset();
+	return any;
 }
 
 extern "C" double PGMetalRendererFPS(void) {

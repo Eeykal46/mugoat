@@ -88,7 +88,7 @@ final class SettingsViewController: UITableViewController {
         switch Section(rawValue: section)! {
         case .cheat: return isOnline ? 1 : 2
         case .mode: return GameMode.allCases.count
-        case .graphics: return settings.tier.allowed.count + 4
+        case .graphics: return settings.tier.allowed.count + 6
         case .controls: return 12
         case .gyro: return (settings.gyroAim == .off ? 1 : 3) + (settings.tiltSteer == .off ? 1 : 2)
         case .files: return fileRows.count
@@ -195,6 +195,14 @@ final class SettingsViewController: UITableViewController {
                     }
                 } else if row == 2 {
                     ramCell(cell, &content)
+                } else if row == 4 {
+                    content.text = L10n.text("Auto smooth")
+                    content.secondaryText = L10n.text("Lowers resolution, then the frame rate, when frames come late or the phone gets hot, and raises them back when there is room. Never above your choices.")
+                    cell.accessoryView = toggle(settings.autoSmooth, label: L10n.text("Auto smooth")) { [weak self] in self?.settings.autoSmooth = $0 }
+                } else if row == 5 {
+                    content.text = L10n.text("Frame pacing")
+                    content.secondaryText = L10n.text("Every frame stays on screen for the same time when the frame rate is below the screen's. Applies at the next launch.")
+                    cell.accessoryView = toggle(settings.framePacing, label: L10n.text("Frame pacing")) { [weak self] in self?.settings.framePacing = $0 }
                 } else {
                     content.text = L10n.text("Frame rate")
                     content.secondaryText = L10n.text("Higher uses more power and heat; 30 FPS is steadiest. Unlocked goes up to 120 on ProMotion iPhones.")
