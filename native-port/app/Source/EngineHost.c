@@ -1,6 +1,10 @@
 #include "HostInternal.h"
 #include "wasm-rt-impl.h"
 #include <pthread.h>
+#include <dlfcn.h>
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+#endif
 #include "NativeEngineConfiguration.h"
 #include "NativeControllerLook.h"
 #include "NativeTouchCamera.h"
@@ -1972,6 +1976,48 @@ static void pg_crash_signal_handler(int sig, siginfo_t *info, void *ucontext) {
   }
   snprintf(buf, sizeof buf, "NATIVE CRASH: Signal %d (%s) at address %p", sig, sigName, info ? info->si_addr : NULL);
   pg_log(buf);
+#if defined(__APPLE__) && defined(__arm64__)
+  // Where it happened, as image+offset so the build's symbols can name the function afterwards.
+  {
+    char thread[64] = "";
+    pthread_getname_np(pthread_self(), thread, sizeof thread);
+    uint64_t pc = 0, lr = 0, fp = 0, sp = 0;
+    if (ucontext) {
+      ucontext_t *uc = (ucontext_t *)ucontext;
+      if (uc->uc_mcontext) { pc = uc->uc_mcontext->__ss.__pc; lr = uc->uc_mcontext->__ss.__lr; fp = uc->uc_mcontext->__ss.__fp; sp = uc->uc_mcontext->__ss.__sp; }
+    }
+    uint64_t base = (uint64_t)(uintptr_t)(void *)env.memory.data, size = (uint64_t)env.memory.size;
+    uint64_t fault = info ? (uint64_t)(uintptr_t)info->si_addr : 0;
+    snprintf(buf, sizeof buf, "CRASH thread '%s' pc 0x%llx lr 0x%llx fp 0x%llx sp 0x%llx; fault %s engine memory (base 0x%llx, size 0x%llx)",
+             thread, (unsigned long long)pc, (unsigned long long)lr, (unsigned long long)fp, (unsigned long long)sp,
+             fault >= base && fault < base + size ? "inside" : "outside", (unsigned long long)base, (unsigned long long)size);
+    pg_log(buf);
+    const uint64_t at[2] = {pc, lr};
+    const char *names[2] = {"pc", "lr"};
+    for (int i = 0; i < 2; i++) {
+      Dl_info d;
+      if (at[i] && dladdr((const void *)(uintptr_t)at[i], &d) && d.dli_fname) {
+        const char *image = strrchr(d.dli_fname, '/'); image = image ? image + 1 : d.dli_fname;
+        snprintf(buf, sizeof buf, "CRASH %s = %s+0x%llx (%s)", names[i], image,
+                 (unsigned long long)(at[i] - (uint64_t)(uintptr_t)d.dli_fbase), d.dli_sname ? d.dli_sname : "?");
+        pg_log(buf);
+      }
+    }
+    // Frame-pointer walk (bounded): return addresses of the callers.
+    uint64_t frame = fp;
+    for (int depth = 0; depth < 24 && frame && (frame & 7) == 0; depth++) {
+      uint64_t next = ((uint64_t *)(uintptr_t)frame)[0], ret = ((uint64_t *)(uintptr_t)frame)[1];
+      Dl_info d;
+      if (ret && dladdr((const void *)(uintptr_t)ret, &d) && d.dli_fname) {
+        const char *image = strrchr(d.dli_fname, '/'); image = image ? image + 1 : d.dli_fname;
+        snprintf(buf, sizeof buf, "CRASH #%d %s+0x%llx (%s)", depth, image, (unsigned long long)(ret - (uint64_t)(uintptr_t)d.dli_fbase), d.dli_sname ? d.dli_sname : "?");
+        pg_log(buf);
+      }
+      if (next <= frame) break;
+      frame = next;
+    }
+  }
+#endif
   struct sigaction sa;
   memset(&sa, 0, sizeof sa);
   sa.sa_handler = SIG_DFL;

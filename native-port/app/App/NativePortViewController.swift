@@ -1324,8 +1324,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             let scale = state == .critical ? 0.65 : state == .serious ? 0.8 : 1.0
             guard scale != self.thermalScale else { return }
             self.thermalScale = scale
-            self.appendLog("Thermal state \(state.rawValue): render resolution ×\(scale)")
-            self.applyLiveResolution()
+            // Logged only: a live back-buffer resize during play crashed in the engine's ResizeBuffers.
+            self.appendLog("Thermal state \(state.rawValue): would lower resolution ×\(scale) (live resize disabled)")
         }
     }
     private func applyLiveResolution() {
