@@ -14,6 +14,7 @@
 #include "BCTextureDecoder.h"
 #include "NativeFrameRate.h"
 #include "NativeSmoothGovernor.h"
+#include "NativeGraphics.h"
 extern "C" void PGNoteGPUAllocationFailure(void);
 #include "NativeFrameMetrics.h"
 #import <UIKit/UIKit.h>
@@ -287,6 +288,13 @@ static std::atomic<bool> smoothWorld{false};
 // Performance log: the same world frames over about a minute (Documents > PerfLogs, written by the app).
 static PGFrameMetricsWindow perfWindow;
 static double perfGPUMs = 0;
+// While the app is in the background iOS refuses GPU work: the command buffer fails, and blit uploads
+// to private textures in it are lost (the textures stay empty after returning). Commits wait instead.
+static std::atomic<bool> holdGPU{false};
+// Counters for the app's performance log, published by the render thread at each present.
+static struct PublishedCounters {
+	std::atomic<uint64_t> skipped{0}, pendingSkips{0}, pipesMade{0}, backgroundHolds{0};
+} published;
 enum CommitReason { CPresent, CFence, CReadback, CIdle, CReasons };
 static const char *kCommitNames[CReasons] = {"present", "fence", "readback", "idle queries"};
 static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
@@ -334,6 +342,12 @@ static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
 		while (prev < serial && !r->completed.compare_exchange_weak(prev, serial)) {}
 		dispatch_semaphore_signal(r->completion);
 	}];
+	if (holdGPU.load(std::memory_order_acquire)) {
+		published.backgroundHolds.fetch_add(1, std::memory_order_relaxed);
+		logf("Metal renderer: the app is in the background; GPU work waits until it returns.");
+		while (holdGPU.load(std::memory_order_acquire)) usleep(20000);
+		logf("Metal renderer: the app is back; GPU work resumes.");
+	}
 	double c0 = nowMs();
 	[cb commit];
 	R->work.submit += nowMs() - c0;
@@ -341,6 +355,11 @@ static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
 	R->lastCommitMs = nowMs();
 	R->commits++;
 	R->commitReasons[reason]++;
+	if (reason == CPresent) {
+		published.skipped.store(R->skipped, std::memory_order_relaxed);
+		published.pendingSkips.store(R->pendingSkips, std::memory_order_relaxed);
+		published.pipesMade.store(R->pipesMade, std::memory_order_relaxed);
+	}
 }
 static void waitSerial(uint64_t s) {
 	while (R->completed.load() < s) dispatch_semaphore_wait(R->completion, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_MSEC));
@@ -2389,6 +2408,28 @@ extern "C" bool PGMetalRendererTakePerfWindow(uint64_t *frames, uint64_t *over33
 	*gpuMsPerFrame = s.frames ? mr::perfGPUMs / s.frames : 0;
 	mr::perfWindow.reset(); mr::perfGPUMs = 0;
 	return s.frames > 0;
+}
+
+extern "C" void PGSetAppInBackground(bool background) { mr::holdGPU.store(background, std::memory_order_release); }
+
+extern "C" uint64_t PGMetalAllocatedBytes(void) {
+	Renderer *r = R;
+	return r && r->device ? (uint64_t)r->device.currentAllocatedSize : 0;
+}
+
+extern "C" bool PGReadRenderCounters(PGRenderCounters *o) {
+	if (!o) return false;
+	*o = PGRenderCounters{};
+	o->skippedDraws = mr::published.skipped.load(std::memory_order_relaxed);
+	o->pipelineWaitSkips = mr::published.pendingSkips.load(std::memory_order_relaxed);
+	o->pipelinesMade = mr::published.pipesMade.load(std::memory_order_relaxed);
+	o->backgroundHolds = mr::published.backgroundHolds.load(std::memory_order_relaxed);
+	o->textureCreateFailures = mr::gTextureStats.createFailures.load(std::memory_order_relaxed);
+	int64_t tex = mr::gTextureStats.gpuBytes.load(std::memory_order_relaxed), bc = mr::gTextureStats.bcGpuBytes.load(std::memory_order_relaxed);
+	o->textureBytes = tex > 0 ? (uint64_t)tex : 0;
+	o->bcTextureBytes = bc > 0 ? (uint64_t)bc : 0;
+	o->metalAllocatedBytes = PGMetalAllocatedBytes();
+	return R != nullptr;
 }
 
 extern "C" double PGMetalRendererFPS(void) {

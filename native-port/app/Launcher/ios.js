@@ -111,6 +111,12 @@ function iosPlay(){
       island("err","Nama 3-20 aksara: huruf, nombor, _"); return;
     }
   }
+  var sv=S.settings||{};
+  if(sv.support==="low" && !S.lowAck){
+    modal("NOT ENOUGH MEMORY", sv.supportNote||"Telefon ini mungkin tak cukup memori untuk GTA V.",
+      [{t:"CANCEL"},{t:"TRY ANYWAY",red:true,f:function(){ S.lowAck=true; iosPlay(); }}]);
+    return;
+  }
   $("btnPlay").disabled=true; S.playing=true; music();
   island("spin","Starting game…");
   call("play", JSON.stringify({mode:S.mode, nick:nick}));
@@ -228,6 +234,7 @@ function buildTabs(){
     {n:"Resume Download",t:"btn",b:"RESUME",f:act("filesResume"),show:function(){ return fa.indexOf("resume")>=0; }},
     {n:"Cancel Download",t:"btn",b:"CANCEL",f:act("filesCancel"),show:function(){ return fa.indexOf("cancel")>=0; }},
     {n:"Remove Downloaded Files",t:"btn",b:"REMOVE",f:act("filesRemove"),show:function(){ return fa.indexOf("remove")>=0; }},
+    {k:"pauseOnLeave",n:"Pause When Leaving",d:"Buka menu pause bila kau keluar dari app (panggilan, Control Center, tukar app).",t:"sw"},
     {n:"Cheat Menu (Trainer)",d:"Bertahan, senjata, panggil kenderaan, tukar cuaca… Story Mode dan Free Roam sahaja.",t:"btn",b:"OPEN",f:act("cheat")},
     {n:"Mod Manager",d:"Pasang .zip, .oiv atau .asi. Restart game selepas tukar mod.",t:"btn",b:"OPEN",f:act("mods")},
     {n:"Saves & Backup",d:"Lihat fail save, buat backup atau restore.",t:"btn",b:"OPEN",f:act("saves")}]},
@@ -243,6 +250,10 @@ function buildTabs(){
   {id:"dv",name:"Device",opts:[
     {n:"App Version",t:"info",k:"version"},
     {n:"Device",t:"info",k:"device"},
+    {n:"iOS",t:"info",k:"iosVersion"},
+    {n:"GPU",t:"info",k:"gpu",d:/Apple[3-6]\b/.test(f.gpu||"")?"GPU lama: sesetengah kesan mungkin nampak berbeza.":""},
+    {n:"Memory for Apps",t:"info",k:"memLimit",d:"Memori yang iOS benarkan untuk app ini (bukan RAM penuh telefon)."},
+    {n:"Support",t:"info",k:"supportText",d:f.supportNote||""},
     {n:"Share Logs",d:"Simpan atau hantar log run ini dan run sebelumnya kepada admin Malay City.",t:"btn",b:"SHARE",f:act("logs")},
     {k:"language",n:"Menu Language",d:"Bahasa untuk skrin menu iOS (fail game, mod, save).",t:"seg",v:ch("language")},
     {n:"Credits",d:"Berdasarkan Mugoat (iOSVN), Muguet (c22dev) dan GTA V Port (Kevin Erik). Lesen GPL-3.0 / MIT.",t:"btn",b:"VIEW",f:act("licenses")}]}

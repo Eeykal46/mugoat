@@ -292,6 +292,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(controllerChanged), name: .GCControllerDidConnect, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(releaseTouchControls), name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(leftApp), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillResign), name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appEnteredBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillReturn), name: UIApplication.willEnterForegroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(memoryWarning), name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(leftApp), name: UIApplication.willTerminateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(thermalStateChanged), name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
         if let recovery = GameSettings.shared.recoverFromFailedBoot() {
@@ -502,6 +506,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         home.settingsButton.isHidden = true
         home.layoutButton.isHidden = true
         engineStarted = true
+        PGWatchMemoryPressure()
         refreshModeChoice()
         bootedMode = mode
         let testMap = mode == .sandbox && GameSettings.shared.sandboxMap == 1
@@ -510,6 +515,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         bootedPreset = GameSettings.shared.graphicsPreset
         appendLog("Graphics: " + GraphicsConfiguration.apply(GameSettings.shared, screen: view.bounds.size))
         appendLog("Device: " + GameSettings.shared.tier.summary + " (\(GameSettings.shared.tier.model), \(GameSettings.shared.tier.physicalMemoryMB) MB reported)")
+        appendLog(GameSettings.shared.tier.checkLine)
         GameSettings.shared.markBootStarted()
         launchButton.setTitle(L10n.text("Đang tải…"), for: .disabled); launchButton.setNeedsUpdateConfiguration()
         appendLog("Native touch controls support held buttons, sprint and weapon selection.")
@@ -1109,6 +1115,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         d["invertLook"] = s.invertLookY
         d["steeringButtons"] = s.steeringButtons
         d["hideTouch"] = s.hideTouchWithController
+        d["pauseOnLeave"] = s.pauseOnLeave
         d["keyboardMouse"] = s.keyboardMouse
         d["gyroAim"] = s.gyroAim.title
         d["gyroSens"] = s.gyroSensitivity
@@ -1121,6 +1128,21 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         d["mode"] = launcherMode ?? ""
         d["version"] = appVersionText
         d["device"] = s.tier.summary
+        d["iosVersion"] = "iOS " + s.tier.systemVersion
+        d["gpu"] = s.tier.gpuSummary
+        d["memLimit"] = s.tier.memoryLimitSummary
+        let limitText = s.tier.appMemoryLimitMB > 0 ? DeviceTier.gigabytes(s.tier.appMemoryLimitMB) : "~" + DeviceTier.gigabytes(s.tier.physicalMemoryMB / 2)
+        switch s.tier.support {
+        case .ok:
+            d["support"] = "ok"; d["supportText"] = "Supported"
+            d["supportNote"] = "iOS beri app ini \(limitText) memori. Cukup untuk GTA V."
+        case .limited:
+            d["support"] = "limited"; d["supportText"] = "Limited"
+            d["supportNote"] = "iOS beri app ini \(limitText) sahaja. Game boleh tertutup sendiri; guna Battery Saver atau Smooth."
+        case .low:
+            d["support"] = "low"; d["supportText"] = "Low Memory"
+            d["supportNote"] = "iOS beri app ini \(limitText) sahaja. GTA V perlukan lebih kurang 2.3 GB, jadi besar kemungkinan tertutup semasa loading."
+        }
         d["server"] = OnlineSettings.server
         d["room"] = OnlineSettings.room
         d["role"] = OnlineSettings.roleLabel(OnlineSettings.role)
@@ -1161,6 +1183,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         case "invertLook": s.invertLookY = on
         case "steeringButtons": s.steeringButtons = on; touchControls.updateVisibility()
         case "hideTouch": s.hideTouchWithController = on; touchControls.updateVisibility()
+        case "pauseOnLeave": s.pauseOnLeave = on
         case "keyboardMouse": s.keyboardMouse = on; if !on { KeyboardMouse.shared.releaseAll() }
         case "gyroAim": if let mode = GyroAimMode.allCases.first(where: { $0.title == value }) { s.gyroAim = mode }
         case "gyroSens": if let number { s.gyroSensitivity = (min(max(number, 0.2), 3) * 10).rounded() / 10 }
@@ -1452,6 +1475,43 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         GameSettings.shared.markBootInterrupted()
         if !launcher.isHidden { launcher.send("pause") }
     }
+    // Leaving the app: the game opens its pause menu (Start on the virtual pad, retried once after
+    // returning if it did not take), the renderer holds GPU work while in the background, and memory
+    // warnings make streaming evict at once.
+    private var leavePausePending = false
+    private var leavePauseTries = 0
+    private var leavePausePressUntil: CFTimeInterval = 0
+    private var leavePauseNextTry: CFTimeInterval = 0
+    @objc private func appWillResign() {
+        guard engineStarted, !engineFailed, worldReadyAt != nil, GameSettings.shared.pauseOnLeave, !leavePausePending, !PGPauseMenuActive() else { return }
+        leavePausePending = true
+        leavePauseTries = 0
+        leavePausePressUntil = 0
+        leavePauseNextTry = 0
+        appendLog("Leaving the app: opening the pause menu.")
+    }
+    @objc private func appEnteredBackground() { PGSetAppInBackground(true) }
+    @objc private func appWillReturn() { PGSetAppInBackground(false) }
+    @objc private func memoryWarning() {
+        guard engineStarted else { return }
+        PGNoteMemoryWarning()
+    }
+    /// True while Start should be held for the pause-on-leave press.
+    private func leavePausePress(now: CFTimeInterval) -> Bool {
+        guard leavePausePending else { return false }
+        if now < leavePausePressUntil { return true }
+        if PGPauseMenuActive() { leavePausePending = false; return false }
+        guard now >= leavePauseNextTry else { return false }
+        if leavePauseTries >= 2 {
+            leavePausePending = false
+            appendLog("Leaving the app: the game did not open its pause menu.")
+            return false
+        }
+        leavePauseTries += 1
+        leavePausePressUntil = now + 0.25
+        leavePauseNextTry = now + 1.5
+        return true
+    }
     @objc private func launcherForeground() {
         if !launcher.isHidden { launcher.send("resume") }
     }
@@ -1728,7 +1788,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         guard UIApplication.shared.applicationState == .active else {
             touchControls.reset(publish: false)
             lastControllerPoll = nil
-            PGUpdateVirtualPad(PGPadState())
+            var idle = PGPadState()
+            if leavePausePress(now: CACurrentMediaTime()) { idle.padButtons = .start }
+            PGUpdateVirtualPad(idle)
             return
         }
         let now = CACurrentMediaTime()
@@ -1901,6 +1963,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             controllerRadioWheel = false
             PGSetRadioWheelDirection(0, 0, false)
         }
+        if leavePausePress(now: now) { state.padButtons.insert(.start) }
         if !PGIsCheatInProgress() {
             PGUpdateVirtualPad(state)
         }

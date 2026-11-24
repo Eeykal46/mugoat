@@ -48,6 +48,13 @@ struct DeviceTier {
     let physicalMemoryMB: Int
     let model: String
     let supportsBCTextures: Bool
+    /// The GPU as Metal names it ("Apple A15 GPU") and its Apple GPU family (4 is A11 ... 9 is A17 and
+    /// newer; 0 unknown). Families below 7 have no sampler border colours (edges clamp instead).
+    let gpuName: String
+    let gpuFamily: Int
+    /// Metal's recommended GPU working set in MB (reported from iOS 16; 0 before).
+    let metalWorkingSetMB: Int
+    let systemVersion: String
 
     static func probe() -> DeviceTier {
         var info = utsname(); uname(&info)
@@ -56,10 +63,24 @@ struct DeviceTier {
         let supportsBC: Bool
         if #available(iOS 16.4, *) { supportsBC = device?.supportsBCTextureCompression ?? false }
         else { supportsBC = false }
+        var family = 0, workingSet = 0
+        if let device {
+            // Raw values (Apple3 is 1003 ... Apple9 is 1009); newer families are only asked on the iOS that knows them.
+            var families: [Int] = [7, 6, 5, 4, 3]
+            if #available(iOS 16.0, *) { families.insert(8, at: 0) }
+            if #available(iOS 17.0, *) { families.insert(9, at: 0) }
+            family = families.first { raw in MTLGPUFamily(rawValue: 1000 + raw).map { device.supportsFamily($0) } ?? false } ?? 0
+            if #available(iOS 16.0, *) { workingSet = Int(device.recommendedMaxWorkingSetSize / 1_048_576) }
+        }
+        let version = ProcessInfo.processInfo.operatingSystemVersion
         return DeviceTier(processAllowanceMB: Self.measureProcessAllowanceMB(),
                           physicalMemoryMB: Int(ProcessInfo.processInfo.physicalMemory / 1_048_576),
                           model: model,
-                          supportsBCTextures: supportsBC)
+                          supportsBCTextures: supportsBC,
+                          gpuName: device?.name ?? "No Metal GPU",
+                          gpuFamily: family,
+                          metalWorkingSetMB: workingSet,
+                          systemVersion: version.patchVersion > 0 ? "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)" : "\(version.majorVersion).\(version.minorVersion)")
     }
 
     /// Jetsam limit = memory still available + what the app already uses.
@@ -73,9 +94,50 @@ struct DeviceTier {
         return (Int(os_proc_available_memory()) + footprint) / 1_048_576
     }
 
-    /// Recommend from the device's actual RAM; all presets remain selectable.
+    /// The memory iOS lets this app use (its memory limit), in MB; 0 when unknown (simulator).
+    var appMemoryLimitMB: Int {
+        #if targetEnvironment(simulator)
+        return 0
+        #else
+        return processAllowanceMB > 256 ? processAllowanceMB : 0
+        #endif
+    }
+    /// Recommend from the device's RAM, lowered when iOS gives this app less than such a phone usually
+    /// gets (4 GB phones, or a signing that drops the larger memory limit); all presets remain selectable.
     var recommended: GraphicsPreset {
-        physicalMemoryMB < 3400 ? .battery : physicalMemoryMB < 4600 ? .performance : physicalMemoryMB < 6000 ? .balanced : physicalMemoryMB < 8000 ? .quality : physicalMemoryMB < 12000 ? .ultra : .max
+        let byRAM: GraphicsPreset = physicalMemoryMB < 3400 ? .battery : physicalMemoryMB < 4600 ? .performance : physicalMemoryMB < 6000 ? .balanced : physicalMemoryMB < 8000 ? .quality : physicalMemoryMB < 12000 ? .ultra : .max
+        let limit = appMemoryLimitMB
+        guard limit > 0 else { return byRAM }
+        let byLimit: GraphicsPreset = limit < 2300 ? .battery : limit < 2900 ? .performance : .max
+        return byLimit.rawValue < byRAM.rawValue ? byLimit : byRAM
+    }
+    /// Whether GTA V fits in what iOS lets this app use. On the iPhone 13 Pro (3072 MB limit) the world
+    /// took about 2.3-2.4 GB at Balanced; the two lines below are first estimates, to be tuned from
+    /// logs of other phones. Without a measured limit, about half the RAM is assumed.
+    enum Support: String { case ok, limited, low }
+    var support: Support {
+        #if targetEnvironment(simulator)
+        return .ok
+        #else
+        let limit = appMemoryLimitMB > 0 ? appMemoryLimitMB : physicalMemoryMB / 2
+        return limit < 1900 ? .low : limit < 2900 ? .limited : .ok
+        #endif
+    }
+    /// "3.0 GB"
+    static func gigabytes(_ mb: Int) -> String { String(format: "%.1f GB", Double(mb) / 1024) }
+    var gpuSummary: String {
+        "\(gpuName)\(gpuFamily > 0 ? " · Apple\(gpuFamily)" : "") · " + (supportsBCTextures ? "BC textures native" : "BC textures decoded")
+    }
+    var memoryLimitSummary: String {
+        let limit = appMemoryLimitMB
+        let app = limit > 0 ? Self.gigabytes(limit) + " of \(marketedMemoryGB) GB" : "unknown"
+        return metalWorkingSetMB > 0 ? app + " · GPU budget " + Self.gigabytes(metalWorkingSetMB) : app
+    }
+    /// One line for the log: everything the support decision and the preset rest on.
+    var checkLine: String {
+        "Device check: \(displayName) (\(model)), iOS \(systemVersion), \(gpuName) (Apple GPU family \(gpuFamily), " +
+        (supportsBCTextures ? "BC native" : "BC decoded") + "), RAM \(physicalMemoryMB) MB, iOS app limit \(appMemoryLimitMB) MB, " +
+        "Metal working set \(metalWorkingSetMB) MB -> \(support.rawValue), recommended \(recommended.title)"
     }
     /// Every preset can be chosen; those above the recommended one show a warning.
     var allowed: [GraphicsPreset] { GraphicsPreset.allCases }

@@ -31,6 +31,14 @@ typedef struct {
 	double fps, p95Ms, p99Ms, maxMs, gpuMsPerFrame;
 } PGPerfWindow;
 bool PGTakePerfWindow(PGPerfWindow *out);
+// Renderer counters since launch (the performance log takes differences) and memory now, in bytes.
+typedef struct {
+	uint64_t skippedDraws, pipelineWaitSkips, pipelinesMade, textureCreateFailures, backgroundHolds;
+	uint64_t textureBytes, bcTextureBytes, metalAllocatedBytes;
+} PGRenderCounters;
+bool PGReadRenderCounters(PGRenderCounters *out);
+// The app is in the background: the renderer holds GPU work (iOS refuses it) until it returns.
+void PGSetAppInBackground(bool background);
 #ifdef __cplusplus
 }
 #endif

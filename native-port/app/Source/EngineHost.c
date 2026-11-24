@@ -23,6 +23,7 @@
 #include <sys/sysctl.h>
 #include <os/proc.h>
 #include <mach/mach.h>
+#include <dispatch/dispatch.h>
 #include "NativeEngineMemory.h"
 #include "NativeMemoryBudget.h"
 #include "MugoatOnline.h"
@@ -112,6 +113,9 @@ uint64_t PGMemoryBudgetClamps(void){return atomic_load(&memoryBudgetClamps);}
 uint64_t PGMemoryBudgetEvictions(void){return atomic_load(&memoryBudgetEvictions);}
 static uint64_t simulatedProcessLimit;
 static uint64_t processLimitMB; // the app's memory limit at boot, or the player's cap (0 in the simulator)
+static _Atomic uint64_t videoBudgetMB; // the video memory the engine was told (0 until it asks)
+uint64_t PGEngineMemoryLimitMB(void){return processLimitMB;}
+uint64_t PGVideoMemoryBudgetMB(void){return atomic_load(&videoBudgetMB);}
 // Settings › Memory cap (0 automatic): the game behaves as if iOS allowed only this much.
 static uint64_t memoryCapMB, capReserveBytes;
 static bool nativeProcessHeadroom(uint64_t *headroom){
@@ -141,17 +145,42 @@ uint64_t pg_streaming_available_memory(uint64_t engineAvailable){
 // (input then stalls), so for a while after a refusal streaming stops growing, and right after
 // one it evicts. Process headroom never sees this: the phone still has memory free.
 extern _Atomic uint64_t pgHeapRefusedAt;
-// The Metal renderer could not create a texture: GPU memory is at the limit. Streaming evicts at once
-// and stops growing for a while (as after a refused heap), before the driver itself aborts.
-void PGNoteGPUAllocationFailure(void){
+// Memory relief: streaming evicts at once and stops growing for a while (as after a refused heap),
+// so the app gets back under its limit before iOS or the Metal driver stops it. Triggered when the
+// renderer cannot create a texture, on iOS memory warnings, and on memory pressure.
+uint64_t PGMetalAllocatedBytes(void); // MRRenderer.mm: what Metal holds for this app
+static _Atomic uint64_t memoryReliefs;
+uint64_t PGMemoryReliefs(void){return atomic_load(&memoryReliefs);}
+static void pg_memory_relief(const char *why){
  struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);double at=now.tv_sec+now.tv_nsec/1e9;uint64_t bits;memcpy(&bits,&at,8);
  atomic_store(&pgHeapRefusedAt,bits);
+ atomic_fetch_add(&memoryReliefs,1);
  static _Atomic double lastLog;double previous=atomic_load(&lastLog);
  if(at-previous>5){atomic_store(&lastLog,at);
   task_vm_info_data_t info={};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
-  uint64_t footprint=task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&count)==KERN_SUCCESS?info.phys_footprint:0;
-  char line[160];snprintf(line,sizeof line,"GPU allocation failed: streaming evicts and holds 30 s (app %llu MB, iOS headroom %llu MB).",
-   (unsigned long long)(footprint>>20),(unsigned long long)(os_proc_available_memory()>>20));pg_log(line);}
+  bool known=task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&count)==KERN_SUCCESS;
+  char line[256];snprintf(line,sizeof line,"%s: streaming evicts and holds 30 s (app %llu MB, iOS headroom %llu MB, Metal %llu MB, address space %llu MB).",why,
+   (unsigned long long)(known?info.phys_footprint>>20:0),(unsigned long long)(os_proc_available_memory()>>20),
+   (unsigned long long)(PGMetalAllocatedBytes()>>20),(unsigned long long)(known?info.virtual_size>>20:0));pg_log(line);}
+}
+void PGNoteGPUAllocationFailure(void){pg_memory_relief("GPU allocation failed");}
+void PGNoteMemoryWarning(void){pg_memory_relief("iOS memory warning");}
+// System memory pressure: critical always relieves; a warning only when this app is itself near
+// its limit (the warning is system-wide and can come while the game has plenty of room).
+static dispatch_source_t memoryPressureSource;
+static void pg_memory_pressure(void *context){
+ unsigned long level=dispatch_source_get_data((dispatch_source_t)context);
+ if(level&DISPATCH_MEMORYPRESSURE_CRITICAL)pg_memory_relief("iOS memory pressure (critical)");
+ else if((level&DISPATCH_MEMORYPRESSURE_WARN)&&os_proc_available_memory()<(768ull<<20))pg_memory_relief("iOS memory pressure");
+}
+void PGWatchMemoryPressure(void){
+ if(memoryPressureSource)return;
+ dispatch_source_t source=dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE,0,DISPATCH_MEMORYPRESSURE_WARN|DISPATCH_MEMORYPRESSURE_CRITICAL,dispatch_get_global_queue(QOS_CLASS_UTILITY,0));
+ if(!source)return;
+ dispatch_set_context(source,source);
+ dispatch_source_set_event_handler_f(source,pg_memory_pressure);
+ dispatch_resume(source);
+ memoryPressureSource=source;
 }
 static int64_t heapCeilingBudget(int64_t result){
  uint64_t bits=atomic_load(&pgHeapRefusedAt);if(!bits)return result;
@@ -210,7 +239,8 @@ u64 pg_video_memory(u64 reported){
   mb=PGGPUReadsBC()?textures:textures/4;
   if(mb<(PGGPUReadsBC()?640u:384u))mb=PGGPUReadsBC()?640:384;
  }
- if(!mb||(mb<<20)>=reported)return reported;
+ if(!mb||(mb<<20)>=reported){atomic_store(&videoBudgetMB,reported>>20);return reported;}
+ atomic_store(&videoBudgetMB,mb);
  char line[160];snprintf(line,sizeof line,"Video memory for the engine: %llu MB (memory limit %llu MB, %s).",(unsigned long long)mb,(unsigned long long)processLimitMB,PGGPUReadsBC()?"GPU reads BC textures":"BC textures decoded");pg_log(line);
  return mb<<20;
 }

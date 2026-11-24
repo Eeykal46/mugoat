@@ -141,6 +141,11 @@ final class GameSettings {
         get { defaults.object(forKey: "hideTouchWithController") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "hideTouchWithController") }
     }
+    /// Leaving the app (a call, Control Center, another app) opens the game's pause menu.
+    var pauseOnLeave: Bool {
+        get { defaults.object(forKey: "pauseOnLeave") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "pauseOnLeave") }
+    }
     var engineMemoryMB: Int {
         get { defaults.integer(forKey: "engineMemoryMB") }
         set { defaults.set(newValue <= 0 ? 0 : min(max(newValue, 3072), 16384), forKey: "engineMemoryMB") }

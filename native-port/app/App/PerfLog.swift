@@ -11,8 +11,13 @@ final class PerfLog {
     private var lastWrite: CFTimeInterval = 0
     private var startedAt: CFTimeInterval = 0
     private var memoryWarnings = 0
+    // Counters at the previous line: each line shows what happened during its own window.
+    private var lastCounters = PGRenderCounters()
+    private var lastReliefs: UInt64 = 0, lastEvictions: UInt64 = 0, lastClamps: UInt64 = 0
     private let queue = DispatchQueue(label: "mugoat.perflog", qos: .utility)
-    private static let header = "time,elapsed_s,device,ram_gb,preset,render_w,render_h,frames,fps_avg,p95_ms,p99_ms,max_ms,over33,over50,over100,gpu_ms_per_frame,thermal,footprint_mb,available_mb,smooth_scale,frame_limit,memory_warnings\n"
+    private static let header = "time,elapsed_s,device,ram_gb,preset,render_w,render_h,frames,fps_avg,p95_ms,p99_ms,max_ms,over33,over50,over100,gpu_ms_per_frame,thermal,footprint_mb,available_mb,smooth_scale,frame_limit,memory_warnings," +
+        "skipped_draws,pipeline_wait_skips,new_pipelines,texture_create_failures,texture_gpu_mb,bc_texture_gpu_mb,metal_allocated_mb," +
+        "metal_working_set_mb,app_limit_mb,video_budget_mb,memory_reliefs,guard_evictions,guard_clamps,low_power,background_holds\n"
 
     private init() {
         NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
@@ -32,6 +37,8 @@ final class PerfLog {
         lastWrite = startedAt
         var discard = PGPerfWindow()
         _ = PGTakePerfWindow(&discard)	// start from an empty window
+        _ = PGReadRenderCounters(&lastCounters)
+        lastReliefs = PGMemoryReliefs(); lastEvictions = PGMemoryBudgetEvictions(); lastClamps = PGMemoryBudgetClamps()
         queue.async {
             do {
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -63,7 +70,7 @@ final class PerfLog {
             String(format: "%.1f", window.maxMs), "\(window.over33)", "\(window.over50)", "\(window.over100)",
             String(format: "%.2f", window.gpuMsPerFrame), "\(ProcessInfo.processInfo.thermalState.rawValue)",
             "\(footprint)", "\(available)", String(format: "%.2f", smoothScale), "\(frameLimit)", "\(memoryWarnings)"
-        ]
+        ] + counterFields(tier: tier)
         let line = fields.joined(separator: ",") + "\n"
         queue.async {
             guard let data = line.data(using: .utf8), let handle = try? FileHandle(forWritingTo: url) else { return }
@@ -71,6 +78,25 @@ final class PerfLog {
             _ = try? handle.seekToEnd()
             try? handle.write(contentsOf: data)
         }
+    }
+
+    /// Renderer and memory-guard columns: counts during this window, memory now (MB).
+    private func counterFields(tier: DeviceTier) -> [String] {
+        var c = PGRenderCounters()
+        _ = PGReadRenderCounters(&c)
+        let reliefs = PGMemoryReliefs(), evictions = PGMemoryBudgetEvictions(), clamps = PGMemoryBudgetClamps()
+        func delta(_ now: UInt64, _ before: UInt64) -> String { "\(now >= before ? now - before : now)" }
+        let fields = [
+            delta(c.skippedDraws, lastCounters.skippedDraws), delta(c.pipelineWaitSkips, lastCounters.pipelineWaitSkips),
+            delta(c.pipelinesMade, lastCounters.pipelinesMade), delta(c.textureCreateFailures, lastCounters.textureCreateFailures),
+            "\(c.textureBytes / 1_048_576)", "\(c.bcTextureBytes / 1_048_576)", "\(c.metalAllocatedBytes / 1_048_576)",
+            "\(tier.metalWorkingSetMB)", "\(PGEngineMemoryLimitMB())", "\(PGVideoMemoryBudgetMB())",
+            delta(reliefs, lastReliefs), delta(evictions, lastEvictions), delta(clamps, lastClamps),
+            ProcessInfo.processInfo.isLowPowerModeEnabled ? "1" : "0", delta(c.backgroundHolds, lastCounters.backgroundHolds)
+        ]
+        lastCounters = c
+        lastReliefs = reliefs; lastEvictions = evictions; lastClamps = clamps
+        return fields
     }
 
     private func removeOldLogs(in folder: URL, keeping count: Int) {

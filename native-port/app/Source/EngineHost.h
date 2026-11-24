@@ -118,6 +118,13 @@ void PGFillAudio(float *left, float *right, uint32_t count);
 uint64_t PGMemoryBudgetQueries(void);
 uint64_t PGMemoryBudgetClamps(void);
 uint64_t PGMemoryBudgetEvictions(void);
+// Memory relief (streaming evicts and holds 30 s): times it ran, iOS memory warnings, system pressure.
+uint64_t PGMemoryReliefs(void);
+void PGNoteMemoryWarning(void);
+void PGWatchMemoryPressure(void);
+// The app memory limit the engine sized itself for, and the video memory it was told (MB, 0 unknown).
+uint64_t PGEngineMemoryLimitMB(void);
+uint64_t PGVideoMemoryBudgetMB(void);
 void PGAssetHealth(uint64_t out[6]);
 bool PGSpawnVehicle(const char *modelName);
 int PGSpawnVehicleStatus(void);
