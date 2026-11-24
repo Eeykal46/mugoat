@@ -1,6 +1,7 @@
 """Prepare a reproducible native CPU boot experiment from the local mirror."""
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -94,14 +95,19 @@ if not bcdec.exists():
     with tarfile.open(archive) as package:
         extract(package, root / 'Tools')
     (root / 'Tools' / f'bcdec-{commit}').rename(bcdec)
-# The game's shaders, precompiled into the app's Metal library.
-run('python3', 'Scripts/fetch_shader_tool.py')
-shaders = root / 'Build/Inputs/shaders'
-run('python3', 'Scripts/unpack_shaders.py', '--shaders', str((options.mirror / 'b/8b0b5899ed/shaders').resolve()), '--out', str(shaders))
-sdk_args = []
-for sdk in options.sdk or ['iphoneos']:
-    sdk_args += ['--sdk', sdk]
-run('python3', 'Scripts/build_metal_shaders.py', str(shaders), *sdk_args)
+# The game's shaders, precompiled into the app's Metal library. PG_PREBUILT_SHADERS=1: GeneratedResources
+# already holds them (CI takes them from the last good build when the translator cannot be downloaded).
+generated = root / 'GeneratedResources'
+if os.environ.get('PG_PREBUILT_SHADERS') == '1' and (generated / 'shaders-iphoneos.metallib').is_file() and (generated / 'shader-reflection.jsonl').is_file():
+    print('Using the precompiled shaders in GeneratedResources.')
+else:
+    run('python3', 'Scripts/fetch_shader_tool.py')
+    shaders = root / 'Build/Inputs/shaders'
+    run('python3', 'Scripts/unpack_shaders.py', '--shaders', str((options.mirror / 'b/8b0b5899ed/shaders').resolve()), '--out', str(shaders))
+    sdk_args = []
+    for sdk in options.sdk or ['iphoneos']:
+        sdk_args += ['--sdk', sdk]
+    run('python3', 'Scripts/build_metal_shaders.py', str(shaders), *sdk_args)
 run('xcodegen', 'generate', '--spec', 'project.yml')
 (root / 'Generated/native-prepared-v1.txt').write_text('ios15.0-native-online-v4\n')
 print('Prepared the native boot project. Open PlayGTA5Native.xcodeproj in Xcode.')
