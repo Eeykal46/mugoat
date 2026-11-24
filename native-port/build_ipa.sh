@@ -62,6 +62,8 @@ codesign --force --sign - --entitlements App/Free.entitlements --generate-entitl
 (cd "$STAGE_FREE" && zip -qry "$ROOT_DIR/MalayCity-AppleID-Free.ipa" Payload)
 echo "Done (Free Apple ID): $ROOT_DIR/MalayCity-AppleID-Free.ipa"
 
+# 2. Paid-certificate IPA (extra memory entitlements): only with BUILD_PAID=1.
+if [ "${BUILD_PAID:-0}" = "1" ]; then
 # 2. Build IPA for Paid Certificate / Developer Account (extra memory entitlements)
 STAGE_PAID=Build/IPA-Paid
 rm -rf "$STAGE_PAID"
@@ -71,4 +73,5 @@ codesign --force --sign - --entitlements App/Full.entitlements --generate-entitl
 (cd "$STAGE_PAID" && zip -qry "$ROOT_DIR/MalayCity-Cert-Paid.ipa" Payload)
 cp "$ROOT_DIR/MalayCity-Cert-Paid.ipa" "$ROOT_DIR/MalayCity.ipa"
 echo "Done (Paid Certificate): $ROOT_DIR/MalayCity-Cert-Paid.ipa"
+fi
 

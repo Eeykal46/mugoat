@@ -128,14 +128,19 @@ H.state=function(d){
 };
 var _check=H.check;
 H.check=function(d){
-  S.files = d.files!==false;
+  d=d||{};
+  if("files" in d) S.files = d.files!==false;      // a deferred re-check (after the intro) carries no files flag
   _check({status:"ok", canPlay:true});
-  if(!S.files) setTimeout(function(){
-    if(S.screen!=="sMain") return;
+};
+function askFiles(){
+  if(S.files || S.filesAsked) return;
+  S.filesAsked=true;
+  setTimeout(function(){
+    if(S.screen!=="sMain" || S.files) return;
     modal("Game Files","Fail game GTA V belum ditambah. Tambah folder game (data/ dan b/) dari app Files untuk mula bermain.",
       [{t:"Later"},{t:"Add Files",red:true,f:function(){ call("action","files"); }}]);
-  }, 900);
-};
+  }, 700);
+}
 var _settings=H.settings;
 H.settings=function(d){ _settings(d); renderPanel(); };
 H.files=function(d){ S.files=d.ok!==false; renderPanel(); };
@@ -160,7 +165,7 @@ H.idle=function(){ S.playing=false; $("btnPlay").disabled=false; music(); island
 H.toast=function(d){ island((d&&d.kind)||"ok", (d&&d.text)||""); };
 
 var _goMain=goMain;
-goMain=function(msg, kind){ _goMain(msg, kind); if(!msg) island("ok","Home"); renderPanel(); };   // iOS: no server connection on the home screen
+goMain=function(msg, kind){ _goMain(msg, kind); if(!msg) island("ok","Home"); renderPanel(); askFiles(); };   // iOS: no server connection on the home screen
 
 /* latar video dari launcher.json: WKWebView main terus dari link */
 var _applyContent=applyContent;
