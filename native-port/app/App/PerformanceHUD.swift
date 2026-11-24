@@ -111,18 +111,23 @@ struct PerformanceReading {
         return min(100, (total - last.time) / (now - last.at) / cores * 100)
     }
 
+    /// mach_host_self() adds a reference to the host port at every call; the overlay asks twice a second.
+    private static let host = mach_host_self()
+    private static let pageSize: UInt64 = {
+        var size = vm_size_t(0)
+        return host_page_size(host, &size) == KERN_SUCCESS && size > 0 ? UInt64(size) : 16384
+    }()
+
     /// The phone's memory in use (everything but free, inactive and speculative pages) and its RAM.
     private static func phoneMemory() -> (Int, Int) {
         let total = Int(ProcessInfo.processInfo.physicalMemory / 1_048_576)
         var stats = vm_statistics64_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
         let kr = withUnsafeMutablePointer(to: &stats) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count) }
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { host_statistics64(host, HOST_VM_INFO64, $0, &count) }
         }
         guard kr == KERN_SUCCESS else { return (0, total) }
-        var pageSize = vm_size_t(0)
-        host_page_size(mach_host_self(), &pageSize)
-        let available = (UInt64(stats.free_count) + UInt64(stats.inactive_count) + UInt64(stats.speculative_count)) * UInt64(pageSize)
+        let available = (UInt64(stats.free_count) + UInt64(stats.inactive_count) + UInt64(stats.speculative_count)) * pageSize
         let used = max(0, total - Int(available / 1_048_576))
         return (used, total)
     }

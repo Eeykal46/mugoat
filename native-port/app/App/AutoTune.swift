@@ -7,7 +7,9 @@ import UIKit
 ///
 /// Each performance-log window (about a minute of world frames) is added; a decision needs 2 minutes:
 /// - hot (iOS "serious" or worse) for over a third of the time: one step lower;
-/// - under 54 FPS with the GPU busy over 80% of a 60 FPS frame: one step lower (fewer pixels help);
+/// - under 54 FPS with the GPU busy over 80% of a 60 FPS frame and over 70% of the frames it actually
+///   gives: one step lower (fewer pixels help). When the game's own threads hold the frame rate (the GPU
+///   then waits part of each frame), fewer pixels would only blur the picture;
 /// - 58 FPS or more with the GPU under 55% of a 60 FPS frame and never hot: one step higher;
 /// - otherwise (the game's own threads are the limit) the height stays.
 final class AutoTune {
@@ -44,10 +46,11 @@ final class AutoTune {
                                                      screen: UIScreen.main.nativeBounds.size, matchScreenShape: false)
         current = min(current, presetHeight)
         let fps = frames / seconds, gpu = gpuMs / frames, hot = hotSeconds / seconds
-        let budget = 1000.0 / 60
+        let budget = 1000.0 / 60, frameMs = 1000 / max(fps, 1)
+        let gpuBound = gpu > budget * 0.8 && gpu > frameMs * 0.7
         let index = Self.steps.lastIndex(where: { $0 <= current }) ?? 0
         var next = current
-        if hot > 0.33 || (fps < 54 && gpu > budget * 0.8) { next = Self.steps[max(0, index - 1)] }
+        if hot > 0.33 || (fps < 54 && gpuBound) { next = Self.steps[max(0, index - 1)] }
         else if fps >= 58 && gpu < budget * 0.55 && hot == 0 { next = min(presetHeight, Self.steps[min(Self.steps.count - 1, index + 1)]) }
         guard next != current else { return nil }
         learnedHeight = next >= presetHeight ? 0 : next

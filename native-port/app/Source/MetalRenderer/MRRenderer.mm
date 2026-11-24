@@ -218,7 +218,10 @@ struct Renderer {
 	bool lastMaskSwap = false;
 
 	// statistics
-	uint64_t commitReasons[4] = {}, skipReasons[8] = {};
+	uint64_t commitReasons[5] = {}, skipReasons[8] = {};
+	// render passes this interval, ended early by a commit or a copy (their targets are stored and loaded
+	// again), and render target binds that repeated the bound targets (the pass goes on)
+	uint64_t passesMade = 0, commitSplits = 0, copySplits = 0, sameTargets = 0;		// copySplits: copies, proxies, readbacks
 	uint64_t draws = 0, skipped = 0, pendingSkips = 0, clamped = 0, presents = 0, commits = 0;
 	uint64_t waterDraws = 0, waterSkipped = 0, waterPending = 0, waterMissingTextures = 0;
 	double pipeWaitMs = 0;		// time spent this frame waiting for pipelines to finish compiling
@@ -263,11 +266,18 @@ static id<MTLCommandBuffer> commandBuffer() {
 	}
 	return R->cmd;
 }
-static void endEncoders() {
-	if (R->pass) {
-		if (R->passSlot >= 0) R->passSlot = -1;
-		[R->pass endEncoding]; R->pass = nil; R->rtDirty = true;
-	}
+// Every end of a render pass goes through here: an occlusion query still running continues in the next
+// pass with a slot of its own (ensurePass ended passes without this, so the next pass of a query that
+// spans a target change was never counted).
+static void endPass() {
+	if (!R->pass) return;
+	[R->pass endEncoding]; R->pass = nil; R->passSlot = -1; R->rtDirty = true;
+}
+// early: a pass still open here ends before the game moved on from its targets (a copy, a depth
+// proxy, a readback): counted for the performance log. Present and commit pass false.
+static void endEncoders(bool early = true) {
+	if (early && R->pass) R->copySplits++;
+	endPass();
 	if (R->compute) { [R->compute endEncoding]; R->compute = nil; }
 	if (R->blit) { [R->blit endEncoding]; R->blit = nil; }
 }
@@ -301,10 +311,11 @@ static std::atomic<bool> holdGPU{false};
 static struct PublishedCounters {
 	std::atomic<uint64_t> skipped{0}, pendingSkips{0}, pipesMade{0}, backgroundHolds{0}, presents{0};
 } published;
-enum CommitReason { CPresent, CFence, CReadback, CIdle, CReasons };
-static const char *kCommitNames[CReasons] = {"present", "fence", "readback", "idle queries"};
+enum CommitReason { CPresent, CFence, CReadback, CIdle, CPassEnd, CReasons };
+static const char *kCommitNames[CReasons] = {"present", "fence", "readback", "idle queries", "queries at a pass end"};
 static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
-	endEncoders();
+	if (R->pass && reason != CPresent) R->commitSplits++;
+	endEncoders(false);
 	if (!R->pendingQueries.empty()) {
 		std::vector<PendingQuery> list;
 		list.swap(R->pendingQueries);
@@ -846,7 +857,7 @@ static void flushClears() {
 	for (auto &c : list) encodeClear(c);
 }
 static void addClear(const PendingClear &c) {
-	if (R->pass) { [R->pass endEncoding]; R->pass = nil; }
+	endPass();
 	R->rtDirty = true;
 	for (auto &e : R->clears) if (e.tex == c.tex && e.mip == c.mip && e.slice == c.slice && e.depth == c.depth) {
 		if (c.depth) {		// merge: a later clear of the other plane adds to the earlier one
@@ -861,7 +872,11 @@ static void addClear(const PendingClear &c) {
 
 static bool ensurePass() {
 	if (R->pass && !R->rtDirty) return true;
-	if (R->pass) { [R->pass endEncoding]; R->pass = nil; }
+	if (R->pass) {
+		endPass();
+		// The pass ends here anyway: query results the engine waits for go to the GPU with it.
+		if (!R->pendingQueries.empty() && nowMs() - R->lastCommitMs >= 4) commit(CPassEnd);
+	}
 	if (R->compute) { [R->compute endEncoding]; R->compute = nil; }
 	if (R->blit) { [R->blit endEncoding]; R->blit = nil; }
 	MTLRenderPassDescriptor *d = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -924,6 +939,7 @@ static bool ensurePass() {
 	info.key = key;
 	R->passInfo = info;
 	R->pass = [commandBuffer() renderCommandEncoderWithDescriptor:d];
+	R->passesMade++;
 	R->rtDirty = false;
 	R->cache[0].reset(); R->cache[1].reset();
 	R->appliedRs = UINT32_MAX; R->appliedRef = UINT32_MAX; R->appliedDss = nil; R->appliedPipe = nil;
@@ -1999,7 +2015,7 @@ static void capture(Texture *t, const std::string &name, id<MTLRenderPipelineSta
 
 static void present(uint32_t texId) {
 	flushClears();
-	endEncoders();
+	endEncoders(false);
 	Texture *t = texture(texId);
 	id<CAMetalDrawable> drawable = nil;
 	if (t && t->tex && R->layer) {
@@ -2268,9 +2284,14 @@ static void execute(uint32_t op, const uint32_t *p, uint32_t n) {
 		break;
 	}
 	case SET_RENDER_TARGETS: {
-		for (int i = 0; i < 8; i++) R->rt[i] = {p[i * 4], p[1 + i * 4], p[2 + i * 4], p[3 + i * 4]};
+		// Binding the targets that are already bound changes nothing in D3D11: the open pass goes on
+		// (a new one would store all its targets and load them again).
+		Renderer::RTB rt[8];
+		for (int i = 0; i < 8; i++) rt[i] = {p[i * 4], p[1 + i * 4], p[2 + i * 4], p[3 + i * 4]};
 		const uint32_t *q = p + 32;
-		R->ds = {q[0], q[1], q[2], q[3], q[4]};
+		Renderer::DSB ds = {q[0], q[1], q[2], q[3], q[4]};
+		if (R->pass && !R->rtDirty && !memcmp(rt, R->rt, sizeof rt) && !memcmp(&ds, &R->ds, sizeof ds)) { R->sameTargets++; break; }
+		memcpy(R->rt, rt, sizeof rt); R->ds = ds;
 		R->rtDirty = true; R->pipeDirty = true;
 		break;
 	}
@@ -2326,6 +2347,9 @@ static void report() {
 	std::string skips;
 	for (int i = 0; i < 5; i++) if (R->skipReasons[i]) { char b[64]; snprintf(b, sizeof b, "%s%s %llu", skips.empty() ? "" : ", ", skipNames[i], (unsigned long long)R->skipReasons[i]); skips += b; }
 	logf("[metal] command buffers per frame: %s; skipped draws: %s", reasons.c_str(), skips.empty() ? "none" : skips.c_str());
+	logf("[metal] render passes per frame: %.1f (ended early by commits %.1f, by copies or compute %.1f); same targets bound again %.1f",
+	     R->passesMade / std::max(1.0, frames), R->commitSplits / std::max(1.0, frames), R->copySplits / std::max(1.0, frames), R->sameTargets / std::max(1.0, frames));
+	R->passesMade = R->commitSplits = R->copySplits = R->sameTargets = 0;
 	if (R->waterDraws || R->waterSkipped || R->waterPending || R->waterMissingTextures) {
 		logf("[water] interval: draws=%llu skipped=%llu awaiting_pipeline=%llu fallback_textures=%llu",
 		     (unsigned long long)R->waterDraws, (unsigned long long)R->waterSkipped, (unsigned long long)R->waterPending, (unsigned long long)R->waterMissingTextures);
@@ -2354,14 +2378,22 @@ static void loop() {
 	hdr[1].store(tail);
 	hdr[2].store(1);
 	uint32_t executed = 0, sinceYield = 0;
+	double idleSince = 0;
 	for (;;) {
 		@autoreleasepool {
 			uint32_t head = hdr[0].load(std::memory_order_acquire);
 			if (head == tail) {
-				// nobody is producing: queries the engine may be polling must reach the GPU
-				// (at most every 2 ms: the engine issues dozens of occlusion queries per frame between short ring gaps)
+				// Nobody is producing: queries the engine may be polling must reach the GPU (at most every
+				// 2 ms: the engine issues dozens of occlusion queries per frame between short ring gaps).
+				// With a render pass open, committing ends it, and its targets are stored and loaded again
+				// when the next draw continues it: on the iPhone 13 Pro that happened 8-10 times a frame,
+				// in the middle of the G-buffer and shadow passes. Then only a longer pause commits; the
+				// results otherwise go with the end of the pass or the frame.
 				bool waiting = !R->pendingQueries.empty();
-				if (waiting && nowMs() - R->lastCommitMs >= 2) { commit(CIdle); waiting = false; }
+				double idleNow = nowMs();
+				if (!idleSince) idleSince = idleNow;
+				bool open = R->pass != nil;
+				if (waiting && (open ? idleNow - idleSince >= 8 : idleNow - R->lastCommitMs >= 2)) { commit(CIdle); waiting = false; }
 				hdr[5].store(1);
 				double i0 = nowMs();
 				if (hdr[0].load() == tail) PGGraphicsWait(R->ring, tail, (waiting ? 2 : 100) * 1000000ll);
@@ -2371,6 +2403,7 @@ static void loop() {
 				continue;
 			}
 			double t0 = nowMs();
+			idleSince = 0;
 			while (tail != head) {
 				const uint32_t *base = (const uint32_t *)(R->mem + R->ring + tail);
 				uint32_t op = base[0], n = base[1];
