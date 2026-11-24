@@ -125,6 +125,9 @@ void PGWatchMemoryPressure(void);
 // The app memory limit the engine sized itself for, and the video memory it was told (MB, 0 unknown).
 uint64_t PGEngineMemoryLimitMB(void);
 uint64_t PGVideoMemoryBudgetMB(void);
+// Free virtual address space this app can still map, and its largest block (MB; 0 unknown).
+uint64_t PGFreeAddressSpaceMB(void);
+uint64_t PGLargestAddressBlockMB(void);
 void PGAssetHealth(uint64_t out[6]);
 bool PGSpawnVehicle(const char *modelName);
 int PGSpawnVehicleStatus(void);

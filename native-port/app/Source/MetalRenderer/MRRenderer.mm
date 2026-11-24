@@ -35,7 +35,7 @@ namespace mr {
 static struct TextureStats {
 	std::atomic<int64_t> gpuBytes{0}, bcGameBytes{0}, bcGpuBytes{0}, shadowBytes{0};
 	std::atomic<int64_t> kindBytes[8][2];		// [BC kind][sRGB]: GPU bytes, to see where decoded memory goes
-	std::atomic<uint64_t> createFailures{0}, decodeFailures{0}, bcReadbacks{0}, bcCopies{0};
+	std::atomic<uint64_t> createFailures{0}, createRetries{0}, decodeFailures{0}, bcReadbacks{0}, bcCopies{0};
 } gTextureStats;
 Texture::~Texture() {
 	gTextureStats.gpuBytes -= (int64_t)gpuBytes;
@@ -470,6 +470,25 @@ static Buffer *buffer(uint32_t id) { return R->objs.as<Buffer>(id, OBuffer); }
 static View *view(uint32_t id, ObjKind k) { return R->objs.as<View>(id, k); }
 static State *state(uint32_t id) { return R->objs.as<State>(id, OState); }
 
+static void noteTextureCreated(Texture *t) {
+	t->gpuBytes = t->tex.allocatedSize;
+	if (t->bcKind) {
+		uint32_t bb = t->bcKind == 1 || t->bcKind == 4 ? 8 : 16;
+		for (uint32_t mip = 0; mip < t->mips; mip++) {
+			uint64_t mw = std::max(1u, t->width >> mip), mh = std::max(1u, t->height >> mip), md = t->dim == 3 ? std::max(1u, t->depthOrLayers >> mip) : t->depthOrLayers;
+			t->bcGameBytes += (mw + 3) / 4 * ((mh + 3) / 4) * bb * md;
+		}
+	}
+	if (!t->gpuBytes) {		// the simulator reports no allocation sizes: estimate
+		if (t->bcNative) t->gpuBytes = t->bcGameBytes;
+		else for (uint32_t mip = 0; mip < t->mips; mip++)
+			t->gpuBytes += (uint64_t)std::max(1u, t->width >> mip) * std::max(1u, t->height >> mip) * (t->dim == 3 ? std::max(1u, t->depthOrLayers >> mip) : t->depthOrLayers) * t->samples * bytesPerTexel(t->format);
+	}
+	gTextureStats.gpuBytes += (int64_t)t->gpuBytes;
+	if (t->bcKind && getenv("PG_TRACE_BC_FORMATS")) logOnce("bcdxgi" + std::to_string(t->dxgi), "Metal renderer [trace]: BC texture format DXGI %u (first %ux%u)", t->dxgi, t->width, t->height);
+	if (t->bcKind) { gTextureStats.bcGameBytes += (int64_t)t->bcGameBytes; gTextureStats.bcGpuBytes += (int64_t)t->gpuBytes; gTextureStats.kindBytes[t->bcKind][t->bcSrgb] += (int64_t)t->gpuBytes; }
+}
+
 static void createTexture(const uint32_t *p) {
 	uint32_t id = p[0], dim = p[1], w = std::max(1u, p[2]), h = std::max(1u, p[3]), d = std::max(1u, p[4]), mips = std::max(1u, p[5]);
 	uint32_t arraySize = std::max(1u, p[6]), dxgi = p[7], bind = p[8], samples = std::max(1u, p[9]);
@@ -505,25 +524,8 @@ static void createTexture(const uint32_t *p) {
 #if MR_TRACE
 	if (m.a8 && (bind & (BIND_RT | BIND_UAV))) logOnce("a8rt" + std::to_string(w) + "x" + std::to_string(h), "Metal renderer [trace]: A8 render target %u %ux%u bind %#x", id, w, h, bind);
 #endif
-	if (!t->tex) { gTextureStats.createFailures++; PGNoteGPUAllocationFailure(); logOnce("tex" + std::to_string(dxgi) + "x" + std::to_string(bind), "Metal renderer: texture %ux%u dxgi %u bind %#x could not be created", w, h, dxgi, bind); }
-	else {
-		t->gpuBytes = t->tex.allocatedSize;
-		if (t->bcKind) {
-			uint32_t bb = m.bc == 1 || m.bc == 4 ? 8 : 16;
-			for (uint32_t mip = 0; mip < mips; mip++) {
-				uint64_t mw = std::max(1u, w >> mip), mh = std::max(1u, t->height >> mip), md = dim == 3 ? std::max(1u, d >> mip) : arraySize;
-				t->bcGameBytes += (mw + 3) / 4 * ((mh + 3) / 4) * bb * md;
-			}
-		}
-		if (!t->gpuBytes) {		// the simulator reports no allocation sizes: estimate
-			if (t->bcNative) t->gpuBytes = t->bcGameBytes;
-			else for (uint32_t mip = 0; mip < mips; mip++)
-				t->gpuBytes += (uint64_t)std::max(1u, w >> mip) * std::max(1u, t->height >> mip) * (dim == 3 ? std::max(1u, d >> mip) : arraySize) * samples * bytesPerTexel(m.format);
-		}
-		gTextureStats.gpuBytes += (int64_t)t->gpuBytes;
-		if (t->bcKind && getenv("PG_TRACE_BC_FORMATS")) logOnce("bcdxgi" + std::to_string(dxgi), "Metal renderer [trace]: BC texture format DXGI %u (first %ux%u)", dxgi, w, h);
-		if (t->bcKind) { gTextureStats.bcGameBytes += (int64_t)t->bcGameBytes; gTextureStats.bcGpuBytes += (int64_t)t->gpuBytes; gTextureStats.kindBytes[t->bcKind][t->bcSrgb] += (int64_t)t->gpuBytes; }
-	}
+	if (!t->tex) { gTextureStats.createFailures++; PGNoteGPUAllocationFailure(); t->retryDesc = desc; t->retryAtMs = nowMs(); logOnce("tex" + std::to_string(dxgi) + "x" + std::to_string(bind), "Metal renderer: texture %ux%u dxgi %u bind %#x could not be created", w, h, dxgi, bind); }
+	else noteTextureCreated(t);
 	R->objs.set(id, t);
 }
 
@@ -563,9 +565,23 @@ static void uploadTexture(const uint32_t *p) {
 	R->work.uploads += nowMs() - t0;
 	R->work.uploadBytes += p[11];
 }
+// A texture iOS could not create is tried again when the game uploads to it (at most every 250 ms),
+// so a short shortage does not leave it empty (drawn black) for the rest of the session.
+static bool retryTexture(Texture *t) {
+	if (t->tex) return true;
+	if (!t->retryDesc || nowMs() - t->retryAtMs < 250) return false;
+	t->retryAtMs = nowMs();
+	t->tex = [R->device newTextureWithDescriptor:t->retryDesc];
+	if (!t->tex) return false;
+	t->retryDesc = nil;
+	noteTextureCreated(t);
+	gTextureStats.createRetries++;
+	logOnce("texretry", "Metal renderer: a texture that failed was created on a later try (%ux%u dxgi %u)", t->width, t->height, t->dxgi);
+	return true;
+}
 static void uploadTextureInner(const uint32_t *p) {
 	Texture *t = texture(p[0]);
-	if (!t || !t->tex) return;
+	if (!t || !retryTexture(t)) return;
 	uint32_t mip = p[1], slice = p[2], x = p[3], y = p[4], z = p[5], w = p[6], h = p[7], d = std::max(1u, p[8]);
 	uint32_t bpr = p[9], rpi = p[10], size = p[11];
 	const uint8_t *data = (const uint8_t *)(p + 12);
@@ -923,6 +939,31 @@ static MTLPrimitiveType primitiveType(uint32_t topo) {
 	switch (topo) { case 1: return MTLPrimitiveTypePoint; case 2: return MTLPrimitiveTypeLine; case 3: return MTLPrimitiveTypeLineStrip; case 5: return MTLPrimitiveTypeTriangleStrip; default: return MTLPrimitiveTypeTriangle; }
 }
 
+// The Metal compiler runs in its own process; when iOS stops it (memory pressure), the compile fails
+// with an interrupted XPC connection and that pipeline stayed failed for the session (the draws using
+// it never showed, e.g. peds' hair). Such failures are retried a few times.
+static bool compilerInterrupted(NSError *error) {
+	NSString *text = error.localizedDescription ?: @"";
+	return [text rangeOfString:@"XPC_ERROR"].location != NSNotFound || [text rangeOfString:@"interrupted"].location != NSNotFound ||
+	       [text rangeOfString:@"Compiler encountered an internal error"].location != NSNotFound;
+}
+static void compilePipeline(Renderer *r, Pipe *pipe, MTLRenderPipelineDescriptor *d, std::string label, int attempt) {
+	[r->device newRenderPipelineStateWithDescriptor:d completionHandler:^(id<MTLRenderPipelineState> s, NSError *error) {
+		if (!s && attempt < 4 && compilerInterrupted(error)) {
+			logOnce("piperetry" + label, "Metal renderer: pipeline compile interrupted (%s): %s; retrying", label.c_str(), error.localizedDescription.UTF8String);
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(attempt + 1) * 400 * (int64_t)NSEC_PER_MSEC),
+			               dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ compilePipeline(r, pipe, d, label, attempt + 1); });
+			return;
+		}
+		std::lock_guard<std::mutex> guard(r->pipeLock);
+		if (!s) { pipe->failed = true; logOnce("pipe" + label, "Metal renderer: pipeline failed (%s): %s", label.c_str(), error.localizedDescription.UTF8String); }
+		else if (attempt) logf("Metal renderer: pipeline %s compiled after %d retries", label.c_str(), attempt);
+		pipe->state = s;
+		pipe->ready.store(true, std::memory_order_release);
+		r->pipesPending--;
+	}];
+}
+
 static Pipe *getPipeline(Shader *vs, Shader *ps, Layout *lay) {
 	State *blend = state(R->blendId);
 	const PassInfo &pi = R->passInfo;
@@ -1007,15 +1048,7 @@ static Pipe *getPipeline(Shader *vs, Shader *ps, Layout *lay) {
 	d.inputPrimitiveTopology = topologyClass(R->topo);
 	if (R->topo == 1) logOnce("points", "Metal renderer: point-list draws (%s): shaders do not write a point size", pipe->label.c_str());
 	R->pipesPending++; R->pipesMade++;
-	Renderer *r = R;
-	std::string label = pipe->label;
-	[R->device newRenderPipelineStateWithDescriptor:d completionHandler:^(id<MTLRenderPipelineState> s, NSError *error) {
-		std::lock_guard<std::mutex> guard(r->pipeLock);
-		if (!s) { pipe->failed = true; logOnce("pipe" + label, "Metal renderer: pipeline failed (%s): %s", label.c_str(), error.localizedDescription.UTF8String); }
-		pipe->state = s;
-		pipe->ready.store(true, std::memory_order_release);
-		r->pipesPending--;
-	}];
+	compilePipeline(R, pipe, d, pipe->label, 0);
 	return pipe;
 }
 
@@ -2209,10 +2242,10 @@ static void report() {
 	logf("[metal] stutter: %llu frames over 50 ms, longest %.0f ms", (unsigned long long)R->longFrames, R->worstFrameMs);
 	R->longFrames = 0; R->worstFrameMs = 0;
 	const double MB = 1048576.0;
-	logf("[metal] textures: GPU %.0f MB (BC: game counts %.0f MB, GPU holds %.0f MB), CPU block copies %.0f MB; BC readbacks %llu, BC copies %llu; create failures %llu, decode failures %llu",
+	logf("[metal] textures: GPU %.0f MB (BC: game counts %.0f MB, GPU holds %.0f MB), CPU block copies %.0f MB; BC readbacks %llu, BC copies %llu; create failures %llu (created later %llu), decode failures %llu",
 	     gTextureStats.gpuBytes / MB, gTextureStats.bcGameBytes / MB, gTextureStats.bcGpuBytes / MB, gTextureStats.shadowBytes / MB,
 	     (unsigned long long)gTextureStats.bcReadbacks.load(), (unsigned long long)gTextureStats.bcCopies.load(),
-	     (unsigned long long)gTextureStats.createFailures.load(), (unsigned long long)gTextureStats.decodeFailures.load());
+	     (unsigned long long)gTextureStats.createFailures.load(), (unsigned long long)gTextureStats.createRetries.load(), (unsigned long long)gTextureStats.decodeFailures.load());
 	std::string kinds;
 	for (int k = 1; k < 8; k++) for (int srgb = 0; srgb < 2; srgb++) if (int64_t v = gTextureStats.kindBytes[k][srgb]) {
 		char b[48]; snprintf(b, sizeof b, "%sBC%d%s %.0f MB", kinds.empty() ? "" : ", ", k, srgb ? " sRGB" : "", v / MB); kinds += b;

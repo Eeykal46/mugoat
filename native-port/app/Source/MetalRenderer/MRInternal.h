@@ -83,6 +83,8 @@ struct Texture : Object {
 	uint64_t lastUse = 0;		// command buffer serial that last referenced it
 	std::unordered_map<uint64_t, id<MTLTexture>> views;
 	uint64_t gpuBytes = 0, bcGameBytes = 0;		// GPU allocation, and the compressed size the game budgets (for the report)
+	MTLTextureDescriptor *retryDesc = nil;	// creation failed: tried again (throttled) when the game uploads to it
+	double retryAtMs = 0;
 	std::unordered_map<uint64_t, std::vector<uint8_t>> compressedShadow;		// "mip:layer" -> original blocks, for CPU readbacks
 	Texture *depthProxy = nullptr;		// r32float copy of a depth texture, for shaders that read it as float (if needed)
 	bool proxyDirty = true;

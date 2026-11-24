@@ -11,9 +11,10 @@ typedef struct {
  uint64_t maximumPages;
 } PGEngineMemory;
 
-// Reserve virtual address space for the device's full physical RAM. Pages are
+// Pages for a reservation of physicalBytes (clamped to the ABI limits). Pages are
 // committed on demand; the initial logical heap does not pre-touch the mapping.
-// Do not replace physical RAM with os_proc_available_memory() or a percentage.
+// EngineHost.c decides the size: the app's memory limit plus slack, within the
+// free address space (iOS 27 without extended-virtual-addressing has ~7 GiB).
 static inline PGEngineMemory pg_engine_memory(uint64_t physicalBytes,uint64_t pageSize){
  PGEngineMemory result={0,0};
  if(!pageSize)return result;

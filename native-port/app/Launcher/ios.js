@@ -204,7 +204,7 @@ function buildTabs(){
     {k:"preset",n:"Graphics Preset",d:"Tahap grafik. Disyorkan untuk iPhone ini: "+(f.recommended||"—")+". Preset lebih tinggi boleh kehabisan memori atau panas.",t:"pick",v:ch("preset")},
     {k:"resolution",n:"Resolution",d:(f.renderSize||"")+" · berkuat kuasa bila mula main.",t:"pick",v:ch("resolution")},
     {k:"fillScreen",n:"Fill Screen",d:"Render ikut bentuk skrin, bukan 16:9.",t:"sw"},
-    {k:"ram",n:"Game Memory",d:"Lalai guna semua RAM. Kalau tak dapat masuk game atau selalu crash, pilih lebih rendah. Minimum 3 GB.",t:"pick",v:ch("ram"),custom:"Custom…",customAction:"ramCustom"},
+    {k:"ram",n:"Game Memory",d:"Auto: ikut had memori yang iOS beri dan ruang alamat yang tinggal (disyorkan). Nilai tetap hanya untuk ujian. Minimum 3 GB.",t:"pick",v:ch("ram"),custom:"Custom…",customAction:"ramCustom"},
     {k:"fps",n:"Frame Rate",d:"30 paling stabil. Unlocked sampai 120 pada skrin ProMotion.",t:"seg",v:["30","60","Unlocked"]},
     {k:"autoSmooth",n:"Auto Smooth",d:"Turunkan FPS bila frame lewat atau telefon panas, naik semula bila lega.",t:"sw"},
     {k:"framePacing",n:"Frame Pacing",d:"Setiap frame kekal sama lama di skrin bila FPS bawah kadar skrin.",t:"sw"}]},
@@ -274,10 +274,10 @@ function pickList(o){
       e.onclick=function(){ pick=v; draw(); }; list.appendChild(e); }); }
   draw();
 }
-renderTab=function(id){
+renderTab=function(id, again){
   buildTabs();
   S.tab=id; renderTabs();
-  var tab=tabsList().filter(function(x){return x.id===id;})[0]||tabsList()[0], body=$("setBody"); body.innerHTML="";
+  var tab=tabsList().filter(function(x){return x.id===id;})[0]||tabsList()[0], body=setList(); body.innerHTML="";
   tab.opts.forEach(function(o){
     if(o.show && !o.show()) return;
     var r=document.createElement("div"); r.className="opt";
@@ -316,18 +316,37 @@ renderTab=function(id){
     }
     body.appendChild(r);
   });
-  repaintSettings(id);
+  repaintSettings(id, again);
 };
-/* iOS WebKit sometimes paints a freshly filled, clipped scroll box without its text until the next
-   layout (the rows' controls show, their names do not). Force a layer and lay out again shortly. */
-var repainting=false;
-function repaintSettings(id){
-  var body=$("setBody");
-  body.style.webkitTransform="translateZ(0)"; void body.offsetHeight;
-  requestAnimationFrame(function(){ body.style.webkitTransform=""; void body.offsetHeight; });
-  if(repainting) return;
-  repainting=true;
-  setTimeout(function(){ if(S.screen==="sSet" && S.tab===id) renderTab(id); repainting=false; }, 140);
+/* iOS WebKit (iOS 27) painted the settings rows without their names until the tab was drawn again:
+   the rows sat in #setBody, a clipped glass box that is also the scroller, with a blurred backdrop
+   (a composited layer) behind them. The buttons are their own layers and showed; the plain text
+   went into the box's foreground layer, which was not repainted. The rows now live in an inner
+   scroller stacked above the backdrop, each row positioned; the tab is also drawn again once the
+   screen's entry animation is over, keeping the scroll position. */
+(function(){ var st=document.createElement("style");
+  st.textContent="#setBody{overflow:hidden!important;display:flex;flex-direction:column;padding:0!important}"+
+    "#setList{position:relative;z-index:1;flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 18px}"+
+    "#setList::-webkit-scrollbar{width:0}#setList .opt{position:relative;z-index:0}";
+  document.head.appendChild(st); })();
+function setList(){
+  var host=$("setBody"), list=$("setList");
+  if(!list || list.parentNode!==host){ host.innerHTML=""; list=document.createElement("div"); list.id="setList"; host.appendChild(list); }
+  return list;
+}
+var repaintGen=0;
+function repaintSettings(id, again){
+  var list=$("setList"); if(!list) return;
+  list.style.webkitTransform="translateZ(0)"; void list.offsetHeight;
+  requestAnimationFrame(function(){ list.style.webkitTransform=""; });
+  if(again) return;
+  var gen=++repaintGen;
+  [180, 1000].forEach(function(ms){ setTimeout(function(){
+    if(gen!==repaintGen || S.screen!=="sSet" || S.tab!==id) return;
+    var l=$("setList"), top=l?l.scrollTop:0;
+    renderTab(id, true);
+    var l2=$("setList"); if(l2) l2.scrollTop=top;
+  }, ms); });
 }
 buildTabs();
 var _openSettings=openSettings;

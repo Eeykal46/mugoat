@@ -17,7 +17,7 @@ final class PerfLog {
     private let queue = DispatchQueue(label: "mugoat.perflog", qos: .utility)
     private static let header = "time,elapsed_s,device,ram_gb,preset,render_w,render_h,frames,fps_avg,p95_ms,p99_ms,max_ms,over33,over50,over100,gpu_ms_per_frame,thermal,footprint_mb,available_mb,smooth_scale,frame_limit,memory_warnings," +
         "skipped_draws,pipeline_wait_skips,new_pipelines,texture_create_failures,texture_gpu_mb,bc_texture_gpu_mb,metal_allocated_mb," +
-        "metal_working_set_mb,app_limit_mb,video_budget_mb,memory_reliefs,guard_evictions,guard_clamps,low_power,background_holds\n"
+        "metal_working_set_mb,app_limit_mb,video_budget_mb,memory_reliefs,guard_evictions,guard_clamps,low_power,background_holds,free_address_space_mb\n"
 
     private init() {
         NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
@@ -92,7 +92,8 @@ final class PerfLog {
             "\(c.textureBytes / 1_048_576)", "\(c.bcTextureBytes / 1_048_576)", "\(c.metalAllocatedBytes / 1_048_576)",
             "\(tier.metalWorkingSetMB)", "\(PGEngineMemoryLimitMB())", "\(PGVideoMemoryBudgetMB())",
             delta(reliefs, lastReliefs), delta(evictions, lastEvictions), delta(clamps, lastClamps),
-            ProcessInfo.processInfo.isLowPowerModeEnabled ? "1" : "0", delta(c.backgroundHolds, lastCounters.backgroundHolds)
+            ProcessInfo.processInfo.isLowPowerModeEnabled ? "1" : "0", delta(c.backgroundHolds, lastCounters.backgroundHolds),
+            "\(PGFreeAddressSpaceMB())"
         ]
         lastCounters = c
         lastReliefs = reliefs; lastEvictions = evictions; lastClamps = clamps

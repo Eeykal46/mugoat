@@ -24,6 +24,7 @@
 #include <os/proc.h>
 #include <mach/mach.h>
 #include <dispatch/dispatch.h>
+#include <stddef.h>
 #include "NativeEngineMemory.h"
 #include "NativeMemoryBudget.h"
 #include "MugoatOnline.h"
@@ -145,6 +146,36 @@ uint64_t pg_streaming_available_memory(uint64_t engineAvailable){
 // (input then stalls), so for a while after a refusal streaming stops growing, and right after
 // one it evicts. Process headroom never sees this: the phone still has memory free.
 extern _Atomic uint64_t pgHeapRefusedAt;
+// Free virtual address space between the lowest and highest address this app may map. On iOS 27
+// without the extended-virtual-addressing entitlement (which free and re-signing setups do not get)
+// that is a window of about 6 GiB at 448 GiB plus about 1 GiB below (dotnet/runtime#136569). Every
+// Metal resource is mapped into it, and so are malloc and the system frameworks: when the engine's
+// reservation takes most of it, texture creation fails and malloc returns NULL while RAM is free
+// (iPhone 13 Pro, iOS 27.2: textures failed at 1 GB of Metal memory with 900 MB of headroom, then
+// CoreGraphics and Core Animation crashed taking the app snapshot when it went to the background).
+typedef struct { uint64_t free, largest, ceiling; } PGAddressSpace;
+static PGAddressSpace pg_address_space(void){
+ PGAddressSpace r={0,0,0};
+ task_vm_info_data_t info={};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
+ if(task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&count)!=KERN_SUCCESS)return r;
+ if((size_t)count*sizeof(natural_t)<offsetof(task_vm_info_data_t,max_address)+sizeof info.max_address||info.max_address<=info.min_address)return r;
+ uint64_t high=info.max_address,end=info.min_address;
+ r.ceiling=high;
+ vm_address_t address=(vm_address_t)info.min_address;
+ for(int regions=0;regions<200000;regions++){
+  vm_size_t size=0;vm_region_basic_info_data_64_t region;mach_msg_type_number_t n=VM_REGION_BASIC_INFO_COUNT_64;mach_port_t object=MACH_PORT_NULL;
+  if(vm_region_64(mach_task_self(),&address,&size,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&region,&n,&object)!=KERN_SUCCESS)break;
+  if(object!=MACH_PORT_NULL)mach_port_deallocate(mach_task_self(),object);
+  if(address>=high)break;
+  if(address>end){uint64_t gap=address-end;r.free+=gap;if(gap>r.largest)r.largest=gap;}
+  end=address+size;address=(vm_address_t)end;
+  if(end>=high)break;
+ }
+ if(high>end){uint64_t gap=high-end;r.free+=gap;if(gap>r.largest)r.largest=gap;}
+ return r;
+}
+uint64_t PGFreeAddressSpaceMB(void){return pg_address_space().free>>20;}
+uint64_t PGLargestAddressBlockMB(void){return pg_address_space().largest>>20;}
 // Memory relief: streaming evicts at once and stops growing for a while (as after a refused heap),
 // so the app gets back under its limit before iOS or the Metal driver stops it. Triggered when the
 // renderer cannot create a texture, on iOS memory warnings, and on memory pressure.
@@ -159,9 +190,10 @@ static void pg_memory_relief(const char *why){
  if(at-previous>5){atomic_store(&lastLog,at);
   task_vm_info_data_t info={};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
   bool known=task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&count)==KERN_SUCCESS;
-  char line[256];snprintf(line,sizeof line,"%s: streaming evicts and holds 30 s (app %llu MB, iOS headroom %llu MB, Metal %llu MB, address space %llu MB).",why,
+  PGAddressSpace space=pg_address_space();
+  char line[288];snprintf(line,sizeof line,"%s: streaming evicts and holds 30 s (app %llu MB, iOS headroom %llu MB, Metal %llu MB, free address space %llu MB, largest block %llu MB).",why,
    (unsigned long long)(known?info.phys_footprint>>20:0),(unsigned long long)(os_proc_available_memory()>>20),
-   (unsigned long long)(PGMetalAllocatedBytes()>>20),(unsigned long long)(known?info.virtual_size>>20:0));pg_log(line);}
+   (unsigned long long)(PGMetalAllocatedBytes()>>20),(unsigned long long)(space.free>>20),(unsigned long long)(space.largest>>20));pg_log(line);}
 }
 void PGNoteGPUAllocationFailure(void){pg_memory_relief("GPU allocation failed");}
 void PGNoteMemoryWarning(void){pg_memory_relief("iOS memory warning");}
@@ -234,10 +266,11 @@ u64 pg_video_memory(u64 reported){
  if(configured)mb=(uint64_t)atol(configured);
  else if(processLimitMB){
   uint64_t textures=processLimitMB>1800+640?processLimitMB-1800:640;
-  // iPhone 13 Pro, 3 GB limit, BC decoded: the GPU held 543 MB of BC textures the engine counted as
-  // 130 MB (4.2x), then texture creation failed and the Metal driver aborted. A quarter, floor 384 MB.
-  mb=PGGPUReadsBC()?textures:textures/4;
-  if(mb<(PGGPUReadsBC()?640u:384u))mb=PGGPUReadsBC()?640:384;
+  // Texture creation failures on the iPhone 13 Pro came from the address space (see pg_address_space),
+  // not from RAM: with 384 MB the engine starved its own streaming (grey buildings, an empty pause
+  // map). Half where BC textures are decoded, at least 640 MB.
+  mb=PGGPUReadsBC()?textures:textures/2;
+  if(mb<640)mb=640;
  }
  if(!mb||(mb<<20)>=reported){atomic_store(&videoBudgetMB,reported>>20);return reported;}
  atomic_store(&videoBudgetMB,mb);
@@ -2114,6 +2147,18 @@ static void *boot(void *ignored) {
   // (e.g. installs signed without extended-virtual-addressing, or memory pressure), the engine
   // automatically steps down the reservation to avoid "iOS could not reserve the engine memory".
   uint64_t sizingBytes=configuredEngineMB?configuredEngineMB*1048576:physicalMemory;
+  // The engine can only ever touch what iOS lets the app use, so automatic sizing reserves the app's
+  // memory limit plus 512 MB of slack (at least the ABI minimum and the 3.25 GB initial heap), not the
+  // whole RAM. Either way 2.5 GB of the free address space stays for Metal, malloc and the frameworks.
+  PGAddressSpace spaceBefore=pg_address_space();
+  if(!configuredEngineMB&&processLimitMB){uint64_t fit=(processLimitMB+512)<<20;if(fit<sizingBytes)sizingBytes=fit;}
+  if(spaceBefore.free){
+   const uint64_t keep=2560ull<<20;uint64_t room=spaceBefore.free>keep?spaceBefore.free-keep:0;
+   if(spaceBefore.largest>(64ull<<20)&&spaceBefore.largest-(64ull<<20)<room)room=spaceBefore.largest-(64ull<<20);
+   if(room<sizingBytes)sizingBytes=room;
+   char line[200];snprintf(line,sizeof line,"Address space before the engine: %llu MB free, largest block %llu MB (ceiling 0x%llx).",
+    (unsigned long long)(spaceBefore.free>>20),(unsigned long long)(spaceBefore.largest>>20),(unsigned long long)spaceBefore.ceiling);pg_log(line);
+  }
   if(configuredEngineMB){char line[128];snprintf(line,sizeof line,"RAM for the game configured: %llu MB (device %llu MB).",(unsigned long long)configuredEngineMB,(unsigned long long)(physicalMemory/1048576));pg_log(line);}
   PGEngineMemory memoryConfiguration=pg_engine_memory(sizingBytes,wasm2c_game_pagesize_env_memory);
   char memoryLog[256];snprintf(memoryLog,sizeof memoryLog,"Device RAM: %llu MB; engine virtual capacity: %llu MB; initial logical heap: %llu MB. Native streaming RAM clamp active with 384 MB headroom reserve.",physicalMemory/1048576,memoryConfiguration.maximumPages*wasm2c_game_pagesize_env_memory/1048576,memoryConfiguration.initialPages*wasm2c_game_pagesize_env_memory/1048576);pg_log(memoryLog);
@@ -2151,6 +2196,8 @@ static void *boot(void *ignored) {
   }
   if (allocation==MAP_FAILED) { pg_log("iOS could not reserve the engine memory."); return NULL; }
   if (guardBytes>0 && mprotect((uint8_t *)allocation+capacity,guardBytes,PROT_NONE)) pg_log("Engine memory guard region could not be protected.");
+  {PGAddressSpace after=pg_address_space();char line[200];snprintf(line,sizeof line,"Engine memory: %llu MB reserved at %p; address space left: %llu MB free, largest block %llu MB.",
+    (unsigned long long)(capacity>>20),allocation,(unsigned long long)(after.free>>20),(unsigned long long)(after.largest>>20));pg_log(line);}
   env.memory.data=(_Atomic volatile uint8_t *)allocation;
 #if TARGET_OS_SIMULATOR
   {char line[96];snprintf(line,sizeof line,"Engine memory at %p (simulator, for debugger watchpoints).",allocation);pg_log(line);}

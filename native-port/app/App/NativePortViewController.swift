@@ -1058,7 +1058,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         return steps
     }
     private func ramLabel(_ mb: Int) -> String {
-        mb == 0 ? String(format: "All RAM (%.1f GB)", Double(GameSettings.shared.tier.physicalMemoryMB) / 1024) : String(format: "%.1f GB", Double(mb) / 1024)
+        mb == 0 ? "Auto" : String(format: "%.1f GB", Double(mb) / 1024)
     }
     private func resolutionLabel(_ height: Int) -> String { height == 0 ? "Auto" : "\(height)p" }
 
