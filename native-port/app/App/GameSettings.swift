@@ -171,6 +171,11 @@ final class GameSettings {
         get { defaults.object(forKey: "framePacing") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "framePacing") }
     }
+    /// A15 and newer: sampled textures use lossy compression (half the memory). Off sets PG_NO_LOSSY.
+    var textureCompression: Bool {
+        get { defaults.object(forKey: "textureCompression") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "textureCompression") }
+    }
     /// Engine frame-limit code for a cap: 0 off, 1 = 60 FPS, 2 = 30 FPS.
     static func frameLimitCode(_ cap: Int) -> Int32 { cap == 0 ? 0 : cap == 60 ? 1 : 2 }
 

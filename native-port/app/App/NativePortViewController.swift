@@ -497,6 +497,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             showWhenFree(title: L10n.text("Máy chủ online"), message: L10n.text("Máy chủ không hợp lệ"))
             return
         }
+        if GameSettings.shared.textureCompression { unsetenv("PG_NO_LOSSY") } else { setenv("PG_NO_LOSSY", "1", 1) }
         metalView.isPaused = true
         metalView.delegate = nil
         // Dawn owns the drawable size from here; MTKView must not reset it on layout.
@@ -1105,6 +1106,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         d["fps"] = s.frameRateCap == 0 ? "Unlocked" : "\(s.frameRateCap)"
         d["autoSmooth"] = s.autoSmooth
         d["framePacing"] = s.framePacing
+        d["textureCompression"] = s.textureCompression
         d["layoutCustom"] = ControlsLayout.isCustomized
         d["lookSpeed"] = s.lookSensitivity
         d["aimSpeed"] = s.aimSensitivity
@@ -1173,6 +1175,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         case "fps": s.frameRateCap = value == "Unlocked" ? 0 : value == "60" ? 60 : 30
         case "autoSmooth": s.autoSmooth = on
         case "framePacing": s.framePacing = on
+        case "textureCompression": s.textureCompression = on
         case "lookSpeed": if let number { s.lookSensitivity = min(max(number, 0.5), 10) }
         case "aimSpeed": if let number { s.aimSensitivity = min(max(number, 0.5), 10) }
         case "buttonSize": if let number { s.controlScale = min(max(number, 0.7), 1.5); touchControls.updateVisibility() }
@@ -1475,41 +1478,54 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         GameSettings.shared.markBootInterrupted()
         if !launcher.isHidden { launcher.send("pause") }
     }
-    // Leaving the app: the game opens its pause menu (Start on the virtual pad, retried once after
-    // returning if it did not take), the renderer holds GPU work while in the background, and memory
-    // warnings make streaming evict at once.
+    // Leaving the app: the game opens its pause menu (Start on the virtual pad), the renderer holds GPU
+    // work while in the background, and memory warnings reach the streaming guard. The press is counted
+    // in presented frames, not seconds: iOS freezes the game in the background and the first frame back
+    // can take seconds, which used up a press timed in seconds before the game ever saw it.
     private var leavePausePending = false
     private var leavePauseTries = 0
-    private var leavePausePressUntil: CFTimeInterval = 0
-    private var leavePauseNextTry: CFTimeInterval = 0
+    private var leavePressing = false
+    private var leavePressEndFrame: UInt64 = 0
+    private var leaveCheckFrame: UInt64 = 0
+    private var leavePressStarted: CFTimeInterval = 0
     @objc private func appWillResign() {
         guard engineStarted, !engineFailed, worldReadyAt != nil, GameSettings.shared.pauseOnLeave, !leavePausePending, !PGPauseMenuActive() else { return }
         leavePausePending = true
         leavePauseTries = 0
-        leavePausePressUntil = 0
-        leavePauseNextTry = 0
+        leavePressing = false
+        leaveCheckFrame = 0
         appendLog("Leaving the app: opening the pause menu.")
     }
     @objc private func appEnteredBackground() { PGSetAppInBackground(true) }
-    @objc private func appWillReturn() { PGSetAppInBackground(false) }
+    @objc private func appWillReturn() {
+        PGSetAppInBackground(false)
+        if leavePressing { leavePressStarted = CACurrentMediaTime() }	// the 8 s limit counts from the return
+    }
     @objc private func memoryWarning() {
         guard engineStarted else { return }
         PGNoteMemoryWarning()
     }
-    /// True while Start should be held for the pause-on-leave press.
+    /// True while Start should be held for the pause-on-leave press: held until the game has drawn 4
+    /// frames with it, then 20 frames to open the menu before one more try.
     private func leavePausePress(now: CFTimeInterval) -> Bool {
         guard leavePausePending else { return false }
-        if now < leavePausePressUntil { return true }
+        let frames = PGPresentedFrames()
+        if leavePressing {
+            if frames >= leavePressEndFrame { leavePressing = false; leaveCheckFrame = frames + 20 }
+            else if UIApplication.shared.applicationState == .active && now - leavePressStarted > 8 { leavePressing = false; leaveCheckFrame = frames }
+            return leavePressing
+        }
         if PGPauseMenuActive() { leavePausePending = false; return false }
-        guard now >= leavePauseNextTry else { return false }
+        guard frames >= leaveCheckFrame else { return false }
         if leavePauseTries >= 2 {
             leavePausePending = false
             appendLog("Leaving the app: the game did not open its pause menu.")
             return false
         }
         leavePauseTries += 1
-        leavePausePressUntil = now + 0.25
-        leavePauseNextTry = now + 1.5
+        leavePressing = true
+        leavePressEndFrame = frames + 4
+        leavePressStarted = now
         return true
     }
     @objc private func launcherForeground() {

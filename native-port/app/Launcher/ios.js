@@ -207,7 +207,8 @@ function buildTabs(){
     {k:"ram",n:"Game Memory",d:"Auto: ikut had memori yang iOS beri dan ruang alamat yang tinggal (disyorkan). Nilai tetap hanya untuk ujian. Minimum 3 GB.",t:"pick",v:ch("ram"),custom:"Custom…",customAction:"ramCustom"},
     {k:"fps",n:"Frame Rate",d:"30 paling stabil. Unlocked sampai 120 pada skrin ProMotion.",t:"seg",v:["30","60","Unlocked"]},
     {k:"autoSmooth",n:"Auto Smooth",d:"Turunkan FPS bila frame lewat atau telefon panas, naik semula bila lega.",t:"sw"},
-    {k:"framePacing",n:"Frame Pacing",d:"Setiap frame kekal sama lama di skrin bila FPS bawah kadar skrin.",t:"sw"}]},
+    {k:"framePacing",n:"Frame Pacing",d:"Setiap frame kekal sama lama di skrin bila FPS bawah kadar skrin.",t:"sw"},
+    {k:"textureCompression",n:"Texture Compression",d:"iPhone 13 (A15) ke atas: tekstur guna separuh memori supaya peta dan jalan keluar lebih cepat. Matikan kalau nampak tekstur pelik. Berkuat kuasa bila mula main.",t:"sw"}]},
   {id:"c",name:"Controls",opts:[
     {n:"Edit Controls Layout",d:f.layoutCustom?"Susun atur sendiri. Gerak, besar/kecilkan atau sorok butang.":"Gerak, besar/kecilkan atau sorok butang skrin.",t:"btn",b:"EDIT",f:act("layout")},
     {k:"lookSpeed",n:"Camera Stick Speed",d:"Laju kamera bila guna jari.",t:"slider",min:0.5,max:10,step:0.1},

@@ -113,6 +113,11 @@ uint64_t PGMemoryBudgetQueries(void){return atomic_load(&memoryBudgetQueries);}
 uint64_t PGMemoryBudgetClamps(void){return atomic_load(&memoryBudgetClamps);}
 uint64_t PGMemoryBudgetEvictions(void){return atomic_load(&memoryBudgetEvictions);}
 static uint64_t simulatedProcessLimit;
+// Streaming guard: stops growth when iOS headroom falls to reserve+band, evicts below the reserve.
+// It was 384+256 MB: on the iPhone 13 Pro (3072 MB limit) the game reached 2.43 GB after two minutes
+// and streaming then stood still for the rest of the session (grey ground, roads not loading).
+#define PG_GUARD_RESERVE (320ull<<20)
+#define PG_GUARD_BAND (128ull<<20)
 static uint64_t processLimitMB; // the app's memory limit at boot, or the player's cap (0 in the simulator)
 static _Atomic uint64_t videoBudgetMB; // the video memory the engine was told (0 until it asks)
 uint64_t PGEngineMemoryLimitMB(void){return processLimitMB;}
@@ -138,7 +143,7 @@ static bool nativeProcessHeadroom(uint64_t *headroom){
 uint64_t pg_streaming_available_memory(uint64_t engineAvailable){
  uint64_t available;
  if(!nativeProcessHeadroom(&available))return engineAvailable;
- uint64_t result=pg_streaming_headroom_budget(engineAvailable,available,384ull*1048576,256ull*1048576);
+ uint64_t result=pg_streaming_headroom_budget(engineAvailable,available,PG_GUARD_RESERVE,PG_GUARD_BAND);
  return result;
 }
 // The engine heap has its own ceiling (the reservation), below the process limit on phones that
@@ -176,34 +181,48 @@ static PGAddressSpace pg_address_space(void){
 }
 uint64_t PGFreeAddressSpaceMB(void){return pg_address_space().free>>20;}
 uint64_t PGLargestAddressBlockMB(void){return pg_address_space().largest>>20;}
-// Memory relief: streaming evicts at once and stops growing for a while (as after a refused heap),
-// so the app gets back under its limit before iOS or the Metal driver stops it. Triggered when the
-// renderer cannot create a texture, on iOS memory warnings, and on memory pressure.
+// Memory relief: for a few seconds streaming evicts, then it stops growing for a while. A texture the
+// renderer could not create calls it at once; iOS memory warnings and pressure only near the limit:
+// iOS sends them from about 80% of the limit (the iPhone 13 Pro got them at 600 MB of headroom), and
+// acting on each one held streaming back for half of the session.
 uint64_t PGMetalAllocatedBytes(void); // MRRenderer.mm: what Metal holds for this app
 static _Atomic uint64_t memoryReliefs;
+static _Atomic double reliefEvictUntil,reliefHoldUntil;
 uint64_t PGMemoryReliefs(void){return atomic_load(&memoryReliefs);}
-static void pg_memory_relief(const char *why){
- struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);double at=now.tv_sec+now.tv_nsec/1e9;uint64_t bits;memcpy(&bits,&at,8);
- atomic_store(&pgHeapRefusedAt,bits);
- atomic_fetch_add(&memoryReliefs,1);
- static _Atomic double lastLog;double previous=atomic_load(&lastLog);
- if(at-previous>5){atomic_store(&lastLog,at);
-  task_vm_info_data_t info={};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
-  bool known=task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&count)==KERN_SUCCESS;
-  PGAddressSpace space=pg_address_space();
-  char line[288];snprintf(line,sizeof line,"%s: streaming evicts and holds 30 s (app %llu MB, iOS headroom %llu MB, Metal %llu MB, free address space %llu MB, largest block %llu MB).",why,
-   (unsigned long long)(known?info.phys_footprint>>20:0),(unsigned long long)(os_proc_available_memory()>>20),
-   (unsigned long long)(PGMetalAllocatedBytes()>>20),(unsigned long long)(space.free>>20),(unsigned long long)(space.largest>>20));pg_log(line);}
+static double pg_monotonic(void){struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);return now.tv_sec+now.tv_nsec/1e9;}
+static void pg_memory_log(const char *what){
+ static _Atomic double lastLog;double at=pg_monotonic(),previous=atomic_load(&lastLog);
+ if(at-previous<=5)return;
+ atomic_store(&lastLog,at);
+ task_vm_info_data_t info={};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
+ bool known=task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&count)==KERN_SUCCESS;
+ PGAddressSpace space=pg_address_space();
+ char line[320];snprintf(line,sizeof line,"%s (app %llu MB, iOS headroom %llu MB, Metal %llu MB, free address space %llu MB, largest block %llu MB).",what,
+  (unsigned long long)(known?info.phys_footprint>>20:0),(unsigned long long)(os_proc_available_memory()>>20),
+  (unsigned long long)(PGMetalAllocatedBytes()>>20),(unsigned long long)(space.free>>20),(unsigned long long)(space.largest>>20));pg_log(line);
 }
-void PGNoteGPUAllocationFailure(void){pg_memory_relief("GPU allocation failed");}
-void PGNoteMemoryWarning(void){pg_memory_relief("iOS memory warning");}
+static void pg_memory_relief(const char *why,double evictSeconds,double holdSeconds){
+ double at=pg_monotonic();
+ if(at+evictSeconds>atomic_load(&reliefEvictUntil))atomic_store(&reliefEvictUntil,at+evictSeconds);
+ if(at+holdSeconds>atomic_load(&reliefHoldUntil))atomic_store(&reliefHoldUntil,at+holdSeconds);
+ atomic_fetch_add(&memoryReliefs,1);
+ char what[160];snprintf(what,sizeof what,"%s: streaming evicts for %.0f s and holds for %.0f s",why,evictSeconds,holdSeconds);pg_memory_log(what);
+}
+// A warning or pressure event: relief only within 64 MB of the guard's reserve; otherwise the guard's
+// own thresholds already keep the headroom.
+static void pg_memory_notice(const char *why){
+ if(os_proc_available_memory()<PG_GUARD_RESERVE+(64ull<<20)){pg_memory_relief(why,1.5,8);return;}
+ char what[160];snprintf(what,sizeof what,"%s: noted; the streaming guard keeps the headroom",why);pg_memory_log(what);
+}
+void PGNoteGPUAllocationFailure(void){pg_memory_relief("GPU allocation failed",2,10);}
+void PGNoteMemoryWarning(void){pg_memory_notice("iOS memory warning");}
 // System memory pressure: critical always relieves; a warning only when this app is itself near
 // its limit (the warning is system-wide and can come while the game has plenty of room).
 static dispatch_source_t memoryPressureSource;
 static void pg_memory_pressure(void *context){
  unsigned long level=dispatch_source_get_data((dispatch_source_t)context);
- if(level&DISPATCH_MEMORYPRESSURE_CRITICAL)pg_memory_relief("iOS memory pressure (critical)");
- else if((level&DISPATCH_MEMORYPRESSURE_WARN)&&os_proc_available_memory()<(768ull<<20))pg_memory_relief("iOS memory pressure");
+ if(level&DISPATCH_MEMORYPRESSURE_CRITICAL)pg_memory_notice("iOS memory pressure (critical)");
+ else if(level&DISPATCH_MEMORYPRESSURE_WARN)pg_memory_notice("iOS memory pressure");
 }
 void PGWatchMemoryPressure(void){
  if(memoryPressureSource)return;
@@ -215,6 +234,9 @@ void PGWatchMemoryPressure(void){
  memoryPressureSource=source;
 }
 static int64_t heapCeilingBudget(int64_t result){
+ double at=pg_monotonic();
+ if(at<atomic_load(&reliefEvictUntil))result=result<-(int64_t)(64ull<<20)?result:-(int64_t)(64ull<<20);
+ else if(at<atomic_load(&reliefHoldUntil))result=result<0?result:0;
  uint64_t bits=atomic_load(&pgHeapRefusedAt);if(!bits)return result;
  double refusedAt;memcpy(&refusedAt,&bits,8);
  struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);double since=now.tv_sec+now.tv_nsec/1e9-refusedAt;
@@ -225,7 +247,7 @@ static int64_t heapCeilingBudget(int64_t result){
 uint64_t pg_streaming_resource_memory(uint64_t engineAvailable){
  uint64_t available;
  int64_t result=(int64_t)engineAvailable;
- if(nativeProcessHeadroom(&available))result=pg_streaming_resource_budget((int64_t)engineAvailable,available,384ull*1048576,256ull*1048576);
+ if(nativeProcessHeadroom(&available))result=pg_streaming_resource_budget((int64_t)engineAvailable,available,PG_GUARD_RESERVE,PG_GUARD_BAND);
  result=heapCeilingBudget(result);
  if(result<(int64_t)engineAvailable&&result<=0)atomic_fetch_add(result<0?&memoryBudgetEvictions:&memoryBudgetClamps,1);
  return (uint64_t)result;
@@ -2132,7 +2154,7 @@ static void *boot(void *ignored) {
   const char *limit=getenv("PG_STREAM_MEMORY_LIMIT_MB");
   if(limit){char *end;unsigned long mb=strtoul(limit,&end,10);if(end!=limit&&!*end&&mb>=2048&&mb<=8192)simulatedProcessLimit=(uint64_t)mb*1048576;}
 #endif
-  if(nativeMemoryGuard)pg_log("Native streaming memory guard enabled with 384 MB of reserve.");
+  if(nativeMemoryGuard)pg_log("Native streaming memory guard enabled: growth stops at 448 MB of headroom, eviction below 320 MB.");
   pg_assets_prewarm();
   nativeEngineCores=pg_engine_core_configuration(getenv("PG_ENGINE_CORES"));
   char coresOption[32];snprintf(coresOption,sizeof coresOption,"-numCores=%u",nativeEngineCores);
@@ -2161,7 +2183,7 @@ static void *boot(void *ignored) {
   }
   if(configuredEngineMB){char line[128];snprintf(line,sizeof line,"RAM for the game configured: %llu MB (device %llu MB).",(unsigned long long)configuredEngineMB,(unsigned long long)(physicalMemory/1048576));pg_log(line);}
   PGEngineMemory memoryConfiguration=pg_engine_memory(sizingBytes,wasm2c_game_pagesize_env_memory);
-  char memoryLog[256];snprintf(memoryLog,sizeof memoryLog,"Device RAM: %llu MB; engine virtual capacity: %llu MB; initial logical heap: %llu MB. Native streaming RAM clamp active with 384 MB headroom reserve.",physicalMemory/1048576,memoryConfiguration.maximumPages*wasm2c_game_pagesize_env_memory/1048576,memoryConfiguration.initialPages*wasm2c_game_pagesize_env_memory/1048576);pg_log(memoryLog);
+  char memoryLog[256];snprintf(memoryLog,sizeof memoryLog,"Device RAM: %llu MB; engine virtual capacity: %llu MB; initial logical heap: %llu MB. Native streaming RAM clamp active with 320 MB headroom reserve.",physicalMemory/1048576,memoryConfiguration.maximumPages*wasm2c_game_pagesize_env_memory/1048576,memoryConfiguration.initialPages*wasm2c_game_pagesize_env_memory/1048576);pg_log(memoryLog);
 #if defined(PG_HAS_ARM64_SHARED_VECTORS) && !defined(PG_SHARED_SIMD_BYTEWISE)
   pg_log("Shared vector memory uses native ARM64 instructions with bounds checks.");
 #else

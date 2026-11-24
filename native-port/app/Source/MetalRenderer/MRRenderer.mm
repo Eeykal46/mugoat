@@ -35,7 +35,7 @@ namespace mr {
 static struct TextureStats {
 	std::atomic<int64_t> gpuBytes{0}, bcGameBytes{0}, bcGpuBytes{0}, shadowBytes{0};
 	std::atomic<int64_t> kindBytes[8][2];		// [BC kind][sRGB]: GPU bytes, to see where decoded memory goes
-	std::atomic<uint64_t> createFailures{0}, createRetries{0}, decodeFailures{0}, bcReadbacks{0}, bcCopies{0};
+	std::atomic<uint64_t> createFailures{0}, createRetries{0}, decodeFailures{0}, bcReadbacks{0}, bcCopies{0}, lossyTextures{0};
 } gTextureStats;
 Texture::~Texture() {
 	gTextureStats.gpuBytes -= (int64_t)gpuBytes;
@@ -146,6 +146,7 @@ struct Renderer {
 	CAMetalLayer *layer;
 	ObjectTable objs;
 	bool float32Filtering = false, borderColors = false;
+	bool lossyTextures = false;	// A15 and newer: sampled textures the CPU fills use lossy compression (half the memory)
 
 	// command buffers
 	id<MTLCommandBuffer> cmd;
@@ -293,7 +294,7 @@ static double perfGPUMs = 0;
 static std::atomic<bool> holdGPU{false};
 // Counters for the app's performance log, published by the render thread at each present.
 static struct PublishedCounters {
-	std::atomic<uint64_t> skipped{0}, pendingSkips{0}, pipesMade{0}, backgroundHolds{0};
+	std::atomic<uint64_t> skipped{0}, pendingSkips{0}, pipesMade{0}, backgroundHolds{0}, presents{0};
 } published;
 enum CommitReason { CPresent, CFence, CReadback, CIdle, CReasons };
 static const char *kCommitNames[CReasons] = {"present", "fence", "readback", "idle queries"};
@@ -356,6 +357,7 @@ static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
 	R->commits++;
 	R->commitReasons[reason]++;
 	if (reason == CPresent) {
+		published.presents.fetch_add(1, std::memory_order_relaxed);
 		published.skipped.store(R->skipped, std::memory_order_relaxed);
 		published.pendingSkips.store(R->pendingSkips, std::memory_order_relaxed);
 		published.pipesMade.store(R->pipesMade, std::memory_order_relaxed);
@@ -489,6 +491,19 @@ static void noteTextureCreated(Texture *t) {
 	if (t->bcKind) { gTextureStats.bcGameBytes += (int64_t)t->bcGameBytes; gTextureStats.bcGpuBytes += (int64_t)t->gpuBytes; gTextureStats.kindBytes[t->bcKind][t->bcSrgb] += (int64_t)t->gpuBytes; }
 }
 
+// Formats and textures lossy compression takes: not packed 16-bit ones, and only textures whose views
+// can differ by sRGB alone (decoded BC textures and fully typed DXGI formats; typeless ones may be
+// viewed as integers, which needs the pixel-format-view usage).
+static bool lossyEligible(const FormatInfo &m, uint32_t dxgi) {
+	switch (m.format) {
+	case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA8Unorm_sRGB: case MTLPixelFormatBGRA8Unorm: case MTLPixelFormatBGRA8Unorm_sRGB:
+	case MTLPixelFormatRG8Unorm: case MTLPixelFormatR8Unorm: break;
+	default: return false;
+	}
+	if (m.bc) return !m.bcNative;
+	return dxgi == 28 || dxgi == 29 || dxgi == 87 || dxgi == 88 || dxgi == 91;
+}
+
 static void createTexture(const uint32_t *p) {
 	uint32_t id = p[0], dim = p[1], w = std::max(1u, p[2]), h = std::max(1u, p[3]), d = std::max(1u, p[4]), mips = std::max(1u, p[5]);
 	uint32_t arraySize = std::max(1u, p[6]), dxgi = p[7], bind = p[8], samples = std::max(1u, p[9]);
@@ -511,16 +526,31 @@ static void createTexture(const uint32_t *p) {
 	if (bind & (BIND_RT | BIND_DS)) usage |= MTLTextureUsageRenderTarget;
 	if (bind & BIND_UAV) usage |= MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
 	if (m.alt != MTLPixelFormatInvalid || t->hasStencil) usage |= MTLTextureUsagePixelFormatView;
-	desc.usage = usage;
 	bool gpuWritten = (bind & (BIND_RT | BIND_DS | BIND_UAV)) || samples > 1 || t->isDepth;
-	t->shared = !gpuWritten;
+	// Lossy compression (A15 and newer) halves sampled textures the CPU fills: the decoded BC textures
+	// (4 times their game size without it) and fully typed RGBA8/BGRA8 ones. They must be private (filled
+	// by blits, which the upload path already does for private textures), and their only other views
+	// switch sRGB, which Metal allows without the pixel-format-view usage that would disable compression.
+	bool lossy = R->lossyTextures && !gpuWritten && samples == 1 && dim == 2 && !m.a8 && !t->hasStencil && lossyEligible(m, dxgi);
+	if (lossy) usage &= ~MTLTextureUsagePixelFormatView;
+	desc.usage = usage;
+	t->shared = !gpuWritten && !lossy;
 	desc.storageMode = t->shared ? MTLStorageModeShared : MTLStorageModePrivate;
+	if (lossy) { if (@available(iOS 15.0, *)) desc.compressionType = MTLTextureCompressionTypeLossy; }
 	// A8 is stored as R8 and read as (0,0,0,R). Metal forbids swizzles on render targets, so those get
 	// the swizzle on the views shaders sample instead.
 	if (m.a8 && !(usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite)))
 		desc.swizzle = MTLTextureSwizzleChannelsMake(MTLTextureSwizzleZero, MTLTextureSwizzleZero, MTLTextureSwizzleZero, MTLTextureSwizzleRed);
 	else if (m.a8) { t->alphaView = true; desc.usage |= MTLTextureUsagePixelFormatView; }
 	t->tex = [R->device newTextureWithDescriptor:desc];
+	if (!t->tex && lossy) {		// as before: shared, uncompressed
+		if (@available(iOS 15.0, *)) desc.compressionType = MTLTextureCompressionTypeLossless;
+		desc.usage = usage | (m.alt != MTLPixelFormatInvalid ? MTLTextureUsagePixelFormatView : 0);
+		desc.storageMode = MTLStorageModeShared; t->shared = true; lossy = false;
+		t->tex = [R->device newTextureWithDescriptor:desc];
+		if (t->tex) logOnce("lossyfail" + std::to_string(dxgi), "Metal renderer: lossy texture %ux%u dxgi %u refused; using an uncompressed one", w, h, dxgi);
+	}
+	if (t->tex && lossy) { gTextureStats.lossyTextures++; t->lossy = true; }
 #if MR_TRACE
 	if (m.a8 && (bind & (BIND_RT | BIND_UAV))) logOnce("a8rt" + std::to_string(w) + "x" + std::to_string(h), "Metal renderer [trace]: A8 render target %u %ux%u bind %#x", id, w, h, bind);
 #endif
@@ -2242,10 +2272,11 @@ static void report() {
 	logf("[metal] stutter: %llu frames over 50 ms, longest %.0f ms", (unsigned long long)R->longFrames, R->worstFrameMs);
 	R->longFrames = 0; R->worstFrameMs = 0;
 	const double MB = 1048576.0;
-	logf("[metal] textures: GPU %.0f MB (BC: game counts %.0f MB, GPU holds %.0f MB), CPU block copies %.0f MB; BC readbacks %llu, BC copies %llu; create failures %llu (created later %llu), decode failures %llu",
+	logf("[metal] textures: GPU %.0f MB (BC: game counts %.0f MB, GPU holds %.0f MB), CPU block copies %.0f MB; BC readbacks %llu, BC copies %llu; create failures %llu (created later %llu), decode failures %llu; lossy textures made %llu",
 	     gTextureStats.gpuBytes / MB, gTextureStats.bcGameBytes / MB, gTextureStats.bcGpuBytes / MB, gTextureStats.shadowBytes / MB,
 	     (unsigned long long)gTextureStats.bcReadbacks.load(), (unsigned long long)gTextureStats.bcCopies.load(),
-	     (unsigned long long)gTextureStats.createFailures.load(), (unsigned long long)gTextureStats.createRetries.load(), (unsigned long long)gTextureStats.decodeFailures.load());
+	     (unsigned long long)gTextureStats.createFailures.load(), (unsigned long long)gTextureStats.createRetries.load(), (unsigned long long)gTextureStats.decodeFailures.load(),
+	     (unsigned long long)gTextureStats.lossyTextures.load());
 	std::string kinds;
 	for (int k = 1; k < 8; k++) for (int srgb = 0; srgb < 2; srgb++) if (int64_t v = gTextureStats.kindBytes[k][srgb]) {
 		char b[48]; snprintf(b, sizeof b, "%sBC%d%s %.0f MB", kinds.empty() ? "" : ", ", k, srgb ? " sRGB" : "", v / MB); kinds += b;
@@ -2331,6 +2362,8 @@ static bool setup() {
 	gPackedBC1 = !gNativeBC && !getenv("PG_NO_PACKED_BC1") && [R->device supportsFamily:MTLGPUFamilyApple3];
 #endif
 	R->borderColors = [R->device supportsFamily:MTLGPUFamilyApple7];
+	// Apple GPU family 8 (A15, M2) and newer. Settings > Graphics > Texture Compression sets PG_NO_LOSSY.
+	if (@available(iOS 16.0, *)) R->lossyTextures = !gNativeBC && [R->device supportsFamily:(MTLGPUFamily)1008] && !getenv("PG_NO_LOSSY");
 	if (!loadShaderLibrary(R->device)) return false;
 	R->zeroBuffer = [R->device newBufferWithLength:65536 options:MTLResourceStorageModeShared];
 	memset(R->zeroBuffer.contents, 0, 65536);
@@ -2369,6 +2402,7 @@ static bool setup() {
 	frameReportsInstall(R->device);
 	logf("Metal renderer: %s, 32-bit float filtering %s, border colours %s, BC textures %s.", R->device.name.UTF8String, R->float32Filtering ? "yes" : "no (nearest fallback)",
 	     R->borderColors ? "yes" : "no", gNativeBC ? "native" : gPackedBC1 ? "decoded on the CPU (BC1 as 16-bit)" : "decoded on the CPU");
+	logf("Metal renderer: lossy compression for sampled textures %s.", R->lossyTextures ? "on" : "off");
 	return true;
 }
 
@@ -2444,6 +2478,8 @@ extern "C" bool PGMetalRendererTakePerfWindow(uint64_t *frames, uint64_t *over33
 }
 
 extern "C" void PGSetAppInBackground(bool background) { mr::holdGPU.store(background, std::memory_order_release); }
+
+extern "C" uint64_t PGPresentedFrames(void) { return mr::published.presents.load(std::memory_order_relaxed); }
 
 extern "C" uint64_t PGMetalAllocatedBytes(void) {
 	Renderer *r = R;

@@ -39,6 +39,8 @@ typedef struct {
 bool PGReadRenderCounters(PGRenderCounters *out);
 // The app is in the background: the renderer holds GPU work (iOS refuses it) until it returns.
 void PGSetAppInBackground(bool background);
+// Frames the renderer has presented since launch (stops while the app is in the background).
+uint64_t PGPresentedFrames(void);
 #ifdef __cplusplus
 }
 #endif
