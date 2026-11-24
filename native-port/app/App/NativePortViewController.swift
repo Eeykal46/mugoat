@@ -1515,6 +1515,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     }
     private func applyLiveResolution() {
         guard engineStarted else { return }
+        // A back-buffer resize during play crashed in the engine's ResizeBuffers (SIGSEGV, iPhone 13 Pro).
+        // Until that is fixed, resolution and screen-shape changes apply at the next launch.
+        appendLog("Graphics: resolution change saved; it applies the next time you start the game.")
+        return
         let settings = GameSettings.shared
         let chosenHeight = settings.renderHeight > 0 ? settings.renderHeight : bootedPreset.height
         let share = settings.autoSmooth ? smoothScale : thermalScale

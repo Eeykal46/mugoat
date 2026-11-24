@@ -116,7 +116,7 @@ final class SettingsViewController: UITableViewController {
             }
             return text
         case .graphics:
-            var text = L10n.text("Resolution changes apply right away. ")
+            var text = L10n.text("Resolution changes apply the next time you start the game. ")
             text += engineRunning ? L10n.text("Preset and frame rate changes apply the next time you start the game.") : L10n.text("Presets apply when you press Play.")
             if settings.graphicsPreset != bootPreset && engineRunning { text += " Restart needed for \(settings.graphicsPreset.title)." }
             if settings.tier.risky(settings.graphicsPreset) { text += " Presets above the recommended one can run out of memory or overheat on this phone; if a launch fails, the game falls back automatically." }
@@ -171,7 +171,7 @@ final class SettingsViewController: UITableViewController {
                 cell.selectionStyle = .none
                 if row == 0 {
                     content.text = L10n.text("Resolution")
-                    content.secondaryText = currentSizeText() + L10n.text(" · changes right away")
+                    content.secondaryText = currentSizeText() + L10n.text(" · applies at next start")
                     let button = UIButton(type: .system)
                     button.setTitle(resolutionTitle(settings.renderHeight) + " ▾", for: .normal)
                     button.showsMenuAsPrimaryAction = true
